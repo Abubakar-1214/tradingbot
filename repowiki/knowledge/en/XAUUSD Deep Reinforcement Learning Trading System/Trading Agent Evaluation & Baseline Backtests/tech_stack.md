@@ -1,0 +1,1 @@
+Stable-Baselines3 PPO for loaded-model inference; PyTorch + DreamerV3 world model for latent/reward analysis; pandas/numpy/matplotlib for backtest computation and plotting; scikit-learn PCA used optionally in latent-space visualization.

@@ -1,0 +1,4 @@
+- Each stage exposes a single CLI entry point (training, evaluation, data fetch) that imports from sibling packages rather than sharing global state.
+- Environment and feature contracts are defined once and reused identically by training, evaluation, and live-trading code.
+- Secrets (MetaAPI token/account ID) are loaded from a `.env` file via `python-dotenv` instead of hard-coded keys.
+- Training artifacts (checkpoints, logs) are written under `train/` and referenced by evaluation/deployment scripts using relative paths.

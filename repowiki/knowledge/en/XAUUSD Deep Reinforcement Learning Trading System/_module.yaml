@@ -1,0 +1,21 @@
+schema_version: 1
+module_path: ""
+title: XAUUSD Deep Reinforcement Learning Trading System
+scope:
+    - README.md
+    - .gitignore
+    - requirements.txt
+    - COLAB_TRAINING_GUIDE.md
+    - DEPLOYMENT_GUIDE.md
+    - DREAMER_IMPLEMENTATION_GUIDE.md
+    - FREE_DEPLOYMENT.md
+    - SECURITY.md
+    - evaluate_model.py
+    - colab_train_dreamer.ipynb
+    - colab_train_ultimate_150.ipynb
+    - .env.example
+    - .gitattributes
+    - LICENSE
+source_files: []
+depends_on: []
+related_to: []

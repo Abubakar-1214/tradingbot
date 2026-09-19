@@ -1,0 +1,11 @@
+schema_version: 1
+module_path: features
+title: Ultimate 150+ Feature Engineering Pipeline
+scope:
+    - features/
+source_files: []
+depends_on: []
+related_to:
+    - path: data_pipeline
+    - path: evaluation
+    - path: training

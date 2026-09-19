@@ -1,0 +1,1 @@
+Provides an ensemble voting agent for robust trading decisions, a deterministic risk supervisor that enforces circuit-breakers and drawdown limits, and multiple position-sizing strategies including Kelly Criterion.

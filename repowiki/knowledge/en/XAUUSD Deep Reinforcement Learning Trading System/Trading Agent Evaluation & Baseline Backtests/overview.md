@@ -1,0 +1,1 @@
+Scripts for backtesting trained RL agents (PPO, DreamerV3) against baseline strategies on XAUUSD data and validating robustness across historical crisis periods.

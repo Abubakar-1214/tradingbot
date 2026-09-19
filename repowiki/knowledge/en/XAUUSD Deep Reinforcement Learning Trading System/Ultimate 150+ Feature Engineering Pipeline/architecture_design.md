@@ -1,0 +1,7 @@
+The package is organized as a layered pipeline orchestrated by `ultimate_150_features.make_ultimate_features`, which sequentially invokes five independent feature submodules and concatenates their outputs against a common base DatetimeIndex:
+- `timeframe_features.py` computes 16 OHLCV-derived indicators (returns, volatility, momentum, MA diff, RSI, MACD, ATR, Bollinger position, volume ratio, distance to high/low) per timeframe (M5/M15/H1/H4/D1/W1).
+- `cross_timeframe.py` derives 12 higher-order features from the per-timeframe outputs: trend alignment, momentum cascade, volatility regime, and support/resistance confluence.
+- `macro_features.py` loads external daily series (DXY, SPX, US10Y, VIX, oil, BTC, EURUSD, silver, GLD), normalizes timezones, and produces return/momentum/correlation features.
+- `calendar_features.py` reads an economic events JSON and emits timing, impact, and event-type flags around NFP/FOMC windows.
+- `microstructure_features.py` adds session, time-of-day, volume profile/imbalance, and spread-based liquidity signals.
+All submodules are imported lazily inside the orchestrator so missing data sources degrade gracefully. The final step reindexes every block with forward-fill, fills NaNs/infs, casts to float32, and returns `(features, returns, timestamps)` ready for RL training. Two legacy/alternate pipelines (`god_mode_features.py`, `multi_timeframe.py`) and a simpler `make_features.py` entry point coexist for smaller feature sets.

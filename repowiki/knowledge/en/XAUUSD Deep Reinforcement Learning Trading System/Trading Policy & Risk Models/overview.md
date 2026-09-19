@@ -1,0 +1,1 @@
+Aggregates policy, planning, and risk-control model components that produce trading decisions and enforce portfolio safety constraints.

@@ -1,0 +1,5 @@
+- Each evaluation script is self-contained with a top-level `main()` / `run_test()` guarded by `if __name__ == "__main__":`, so they can be executed independently without importing.
+- Backtests split data by date using `np.searchsorted(df['time'].to_numpy(), np.datetime64(...))` to obtain a deterministic test window before constructing the environment.
+- Equity curves are computed via cumulative product `(1.0 + returns).cumprod()` starting from an initial value of 1.0, enabling direct visual comparison between RL and baseline strategies.
+- Performance is summarized by printing final equity, total trades, and position-time fractions rather than returning structured results, keeping scripts oriented toward quick human inspection.
+- Optional heavy dependencies (matplotlib, sklearn) are imported lazily inside functions and wrapped in try/except blocks so core evaluation logic degrades gracefully when those packages are missing.

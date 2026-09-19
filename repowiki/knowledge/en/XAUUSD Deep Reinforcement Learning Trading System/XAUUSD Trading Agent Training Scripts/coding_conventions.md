@@ -1,0 +1,6 @@
+- Hyperparameters (WINDOW, COST, TRAIN_END_DATE, N_ENVS, CHUNK_STEPS, SAVE_DIR/PREFIX) are declared as module-level constants near the top of each script rather than passed through arguments.
+- Train/test split is performed by locating the index of `TRAIN_END_DATE` in the `time` column via `np.searchsorted(df['time'].to_numpy(), np.datetime64(TRAIN_END_DATE))` and slicing `X` and `r` accordingly.
+- DreamerV3 scripts implement a local `TradingEnvironment` class with `reset()` returning a flattened window of features plus current position, and `step(action_onehot)` computing reward as `pos * return - cost` while tracking equity multiplicatively.
+- Training loops follow a prefilled-replay-buffer phase (random exploration) followed by an alternating act/train phase where `agent.train_step()` is invoked every `TRAIN_EVERY` steps.
+- Checkpoints are saved periodically inside the training loop using f-string paths built from `SAVE_DIR`/`SAVE_PREFIX` and a step counter, plus a final `_final.pt` (Dreamer) or `_latest.zip` (PPO) artifact.
+- Device selection defaults to `'auto'` and resolves to CUDA > MPS > CPU via `torch.cuda.is_available()` / `torch.backends.mps.is_available()` checks before constructing the agent.

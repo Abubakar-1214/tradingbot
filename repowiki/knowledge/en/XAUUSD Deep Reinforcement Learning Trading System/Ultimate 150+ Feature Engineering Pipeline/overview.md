@@ -1,0 +1,1 @@
+Aggregates technical, macroeconomic, calendar, microstructure, and cross-timeframe indicators into a unified 150+ feature matrix for gold trading model training.

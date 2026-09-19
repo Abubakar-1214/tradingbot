@@ -1,0 +1,1 @@
+Ingests, resamples, and merges XAUUSD OHLC data with macro indicators and a rule-based economic calendar to produce training-ready datasets for the trading system.

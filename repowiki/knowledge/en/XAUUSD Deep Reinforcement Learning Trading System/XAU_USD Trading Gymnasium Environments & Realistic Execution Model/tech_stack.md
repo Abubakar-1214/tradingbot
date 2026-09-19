@@ -1,0 +1,1 @@
+Python with NumPy arrays for state and gymnasium (`gymnasium.Env`, `spaces.Box`, `spaces.Discrete`) for the RL interface.

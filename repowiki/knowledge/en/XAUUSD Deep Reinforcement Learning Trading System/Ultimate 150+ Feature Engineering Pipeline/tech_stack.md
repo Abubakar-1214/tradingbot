@@ -1,0 +1,1 @@
+Pure Python with pandas/numpy for all computations; no ML libraries — feature engineering is decoupled from downstream training code. External inputs are CSV daily series and a JSON economic calendar file under `data/`.

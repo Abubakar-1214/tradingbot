@@ -1,0 +1,1 @@
+No build or install steps are required; each file can be run directly (e.g. `python env/realistic_execution.py` executes its `__main__` demo scenarios).

@@ -1,0 +1,1 @@
+stable-baselines3 PPO with SubprocVecEnv for parallelized vectorized training; PyTorch-backed DreamerV3 agent with CUDA/MPS auto-detection; pandas/numpy for time-series slicing; tqdm progress bars for long training loops.

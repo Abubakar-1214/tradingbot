@@ -1,0 +1,6 @@
+- Each submodule exposes a single top-level `compute_all_*_features` function that internally calls grouped helper functions and concatenates their DataFrames along axis=1.
+- Feature columns are prefixed with the source timeframe (e.g. `{tf}_return`, `{tf}_rsi`) so multi-timeframe outputs can be concatenated without name collisions.
+- Missing or optional data sources are handled defensively: modules check column existence / file existence and fall back to zero-filled defaults instead of raising.
+- Every module initializes its own `logging.getLogger(__name__)` with `basicConfig(level=INFO)` and logs a banner-style summary at the start and end of each computation step.
+- Timezone-naive DatetimeIndex is enforced via `pd.to_datetime(..., utc=True).dt.tz_localize(None)` before any reindex/align operation across disparate data sources.
+- Final outputs are cast to `np.float32` and have NaN/inf replaced with 0.0 before being returned to the orchestrator.

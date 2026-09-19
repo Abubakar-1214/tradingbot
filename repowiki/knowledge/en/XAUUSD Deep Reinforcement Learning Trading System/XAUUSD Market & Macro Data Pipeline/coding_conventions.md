@@ -1,0 +1,6 @@
+- Each script exposes a `main()` function guarded by `if __name__ == "__main__":` so modules are both importable libraries and runnable CLI tools.
+- All logging goes through a module-level `logging.getLogger(__name__)` configured once at the top of each script rather than print statements.
+- Time-series ingestion normalizes raw inputs to a common schema with a `time` datetime column plus `open/high/low/close` (and optional `tick_volume`/`volume`) before any downstream processing.
+- Resampling uses pandas `resample(rule).agg({'open':'first','high':'max','low':'min','close':'last','volume':'sum'})` to build higher timeframes from M1 source data.
+- Macro alignment is performed by setting `time` as the index on the master series and using `df.reindex(master.index, method='ffill')` to propagate daily values to hourly timestamps.
+- Economic events are represented as dicts with a fixed schema (`datetime`, `event`, `currency`, `impact`, `description`, `typical_move_pips`) and serialized as a JSON list.

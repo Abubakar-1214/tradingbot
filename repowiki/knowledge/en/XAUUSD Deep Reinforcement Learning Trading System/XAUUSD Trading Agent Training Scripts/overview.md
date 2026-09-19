@@ -1,0 +1,1 @@
+Standalone training entry points that train PPO and DreamerV3 agents on XAUUSD price data using feature pipelines from the features package and environments from the env/models packages.

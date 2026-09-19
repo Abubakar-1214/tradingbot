@@ -1,0 +1,7 @@
+Flat collection of independent entry-point scripts under `eval/`, each targeting a specific evaluation scenario:
+- `eval_ppo.py` loads a saved Stable-Baselines3 PPO model, runs it deterministically on a post-2022 test split of `data/xauusd_1h.csv`, and compares equity curves with Buy & Hold and MA(20/50) baselines.
+- `baselines.py` computes three non-RL baselines (Buy & Hold, random policy, MA crossover) over the full dataset and plots their equity curves.
+- `crisis_validation.py` defines a `CrisisValidator` class that iterates predefined crisis windows (COVID 2020, rate hikes 2022, SVB 2023, Ukraine invasion) and evaluates any agent exposing an `act(obs)` interface against pass/fail thresholds (final equity > 0.7, max drawdown < 30%, Sharpe > -1, trades < 200).
+- `analyze_dreamer.py` introspects a trained DreamerV3 world model by measuring observation reconstruction error, reward-prediction correlation, latent-space PCA visualization, and a random-agent comparison; it imports `DreamerV3Agent` from `models.dreamer_agent` and reuses the `TradingEnvironment` from `train.train_dreamer`.
+- `quick_test.py` is a lightweight smoke-test that loads a swing-trader PPO checkpoint and prints 2024–2025 backtest stats.
+All scripts depend outward on shared modules (`features.make_features`, `env.xauusd_env*`, `data.load_data`) and do not import each other, keeping evaluation scenarios isolated.

@@ -1,0 +1,1 @@
+End-to-end DRL trading system that wires XAUUSD market data, a 150+ feature pipeline, Gymnasium environments, PPO/DreamerV3 agents, and MT5/MetaAPI live execution into a unified training-to-deployment workflow.

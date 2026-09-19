@@ -1,0 +1,1 @@
+pandas + numpy for all time-series manipulation; yfinance for market data retrieval; dateutil `relativedelta` and stdlib `calendar` for rule-based economic event scheduling; optional `transformers`/torch for FinBERT sentiment analysis in `sentiment_analysis.py` (disabled by default).

@@ -1,0 +1,11 @@
+schema_version: 1
+module_path: data_pipeline
+title: XAUUSD Market & Macro Data Pipeline
+scope:
+    - data/
+    - scripts/
+source_files: []
+depends_on: []
+related_to:
+    - path: environment
+    - path: features

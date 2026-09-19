@@ -1,0 +1,1 @@
+Gymnasium environments for XAU/USD long-only and long-short trading plus a realistic execution cost model that simulates spread, slippage, market impact, and adverse selection.

@@ -1,0 +1,116 @@
+# 知识卡导出索引文件
+schema_version: 1
+locale: en-US
+branch: main
+nodes_managed: true
+exported_at: "2026-09-19T14:49:51Z"
+modules:
+    "":
+        dir_name: XAUUSD Deep Reinforcement Learning Trading System
+        title: XAUUSD Deep Reinforcement Learning Trading System
+        scope:
+            - README.md
+            - .gitignore
+            - requirements.txt
+            - COLAB_TRAINING_GUIDE.md
+            - DEPLOYMENT_GUIDE.md
+            - DREAMER_IMPLEMENTATION_GUIDE.md
+            - FREE_DEPLOYMENT.md
+            - SECURITY.md
+            - evaluate_model.py
+            - colab_train_dreamer.ipynb
+            - colab_train_ultimate_150.ipynb
+            - .env.example
+            - .gitattributes
+            - LICENSE
+        source_files: []
+        children:
+            - data_pipeline
+            - environment
+            - evaluation
+            - features
+            - models
+            - training
+        depends_on: []
+        related_to: []
+    data_pipeline:
+        dir_name: XAUUSD Market & Macro Data Pipeline
+        title: XAUUSD Market & Macro Data Pipeline
+        scope:
+            - data/
+            - scripts/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to:
+            - path: environment
+            - path: features
+    environment:
+        dir_name: XAU_USD Trading Gymnasium Environments & Realistic Execution Model
+        title: XAU/USD Trading Gymnasium Environments & Realistic Execution Model
+        scope:
+            - env/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to:
+            - path: data_pipeline
+            - path: evaluation
+            - path: training
+    evaluation:
+        dir_name: Trading Agent Evaluation & Baseline Backtests
+        title: Trading Agent Evaluation & Baseline Backtests
+        scope:
+            - eval/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to:
+            - path: environment
+            - path: features
+            - path: training
+    features:
+        dir_name: Ultimate 150+ Feature Engineering Pipeline
+        title: Ultimate 150+ Feature Engineering Pipeline
+        scope:
+            - features/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to:
+            - path: data_pipeline
+            - path: evaluation
+            - path: training
+    models:
+        dir_name: Trading Policy & Risk Models
+        title: Trading Policy & Risk Models
+        scope:
+            - models/
+        source_files: []
+        children:
+            - models/ensemble_risk_position
+        depends_on: []
+        related_to: []
+    models/ensemble_risk_position:
+        dir_name: Ensemble Trading, Risk Supervision & Position Sizing
+        title: Ensemble Trading, Risk Supervision & Position Sizing
+        scope:
+            - models/ensemble.py
+            - models/risk_supervisor.py
+            - models/position_sizing.py
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []
+    training:
+        dir_name: XAUUSD Trading Agent Training Scripts
+        title: XAUUSD Trading Agent Training Scripts
+        scope:
+            - train/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to:
+            - path: environment
+            - path: evaluation
+            - path: features

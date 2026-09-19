@@ -1,0 +1,2 @@
+- Each file exposes a focused class or set of classes with no cross-imports between sibling files, keeping policy, planning, and risk concerns isolated.
+- Public interfaces are exposed via plain Python classes without framework-specific decorators, allowing direct instantiation by higher-level agents.

@@ -1,0 +1,6 @@
+- Each module sets up its own `logging.basicConfig(level=logging.INFO)` and obtains a module-scoped logger via `logger = logging.getLogger(__name__)`.
+- Public classes expose a small, consistent API surface (`act`/`train`/`save`/`load` for agents; `check_trade`/`update_state`/`reset_daily` for risk; `compute_position_size` for sizers) so they can be composed or swapped by caller code.
+- Configuration is provided through a `config` dict with sensible defaults supplied by a `get_default_config()` static method rather than hardcoded literals scattered across `__init__`.
+- Rejection/failure paths return a tuple of `(status, reason_string)` and increment internal counters (e.g., `_reject` increments `total_trades_rejected` and tracks reasons in a dict).
+- Stateful tracking uses plain instance attributes initialized in `__init__` (equity, daily PnL, counters, history lists) instead of external state stores.
+- Each file includes an `if __name__ == '__main__':` block demonstrating usage with mock inputs and printing formatted results.

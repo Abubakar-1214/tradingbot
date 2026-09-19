@@ -1,0 +1,1 @@
+Each file ships a self-contained `__main__` demo block that can be run directly (`python models/ensemble.py`, `python models/risk_supervisor.py`, `python models/position_sizing.py`) to exercise mock agents and print scenario results without external data.

@@ -1,0 +1,11 @@
+schema_version: 1
+module_path: environment
+title: XAU/USD Trading Gymnasium Environments & Realistic Execution Model
+scope:
+    - env/
+source_files: []
+depends_on: []
+related_to:
+    - path: data_pipeline
+    - path: evaluation
+    - path: training

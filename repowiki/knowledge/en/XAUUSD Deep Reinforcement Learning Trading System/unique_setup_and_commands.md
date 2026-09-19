@@ -1,0 +1,1 @@
+Install via `pip install -r requirements.txt`; train with `python train/train_ultimate_150.py --steps <N> --device {cpu|mps|cuda}` or run the Colab notebooks `colab_train_ultimate_150.ipynb` / `colab_train_dreamer.ipynb`; evaluate with `python evaluate_model.py --model <checkpoint>`; configure credentials by copying `.env.example` to `.env`.

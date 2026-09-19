@@ -1,0 +1,1 @@
+PyTorch + Stable-Baselines3 + Gymnasium form the shared RL backbone used by both PPO and DreamerV3 training/evaluation; pandas/numpy underpin the data and features pipelines; MetaTrader5 and python-dotenv bridge live execution and secrets across deployment scripts.

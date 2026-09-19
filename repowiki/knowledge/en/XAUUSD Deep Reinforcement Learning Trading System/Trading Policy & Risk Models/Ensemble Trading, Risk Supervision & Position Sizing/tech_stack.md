@@ -1,0 +1,1 @@
+NumPy for statistical calculations, PyTorch tensors for optional integration with a DreamerV3-style agent's RSSM/critic/actor in `dynamic_sizing`; standard library `datetime` for halt timers.

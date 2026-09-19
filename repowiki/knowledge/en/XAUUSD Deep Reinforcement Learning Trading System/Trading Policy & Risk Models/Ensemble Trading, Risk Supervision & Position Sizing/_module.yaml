@@ -1,0 +1,10 @@
+schema_version: 1
+module_path: models/ensemble_risk_position
+title: Ensemble Trading, Risk Supervision & Position Sizing
+scope:
+    - models/ensemble.py
+    - models/risk_supervisor.py
+    - models/position_sizing.py
+source_files: []
+depends_on: []
+related_to: []

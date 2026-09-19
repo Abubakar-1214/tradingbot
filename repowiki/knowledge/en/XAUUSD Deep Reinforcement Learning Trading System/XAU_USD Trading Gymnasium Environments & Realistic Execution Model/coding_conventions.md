@@ -1,0 +1,6 @@
+- Environments subclass `gymnasium.Env` and implement the standard `reset(seed=None, options=None)` / `step(action)` contract, returning `(obs, reward, terminated, truncated, info)`.
+- Observations are built by slicing a fixed-size window of features from `self.X`, flattening it, and concatenating the current position as the last element.
+- Position changes are computed as `delta = abs(new_pos - self.pos)` and used uniformly to derive both trade costs and turnover penalties, keeping cost logic centralized in `step`.
+- Episode termination is driven by reaching the end of the return series (`self.t >= self.T`), with optional early truncation via `max_episode_steps`.
+- Execution costs are modeled as additive components tracked in a `cost_breakdown` dict (spread, slippage, commission, market_impact, adverse_selection) so users can inspect where money is lost.
+- Configuration is passed via keyword arguments with explicit default values (e.g. `cost_per_trade=0.0001`, `window=64`), allowing easy tuning without changing code.
