@@ -66,8 +66,33 @@ def test_costs_are_charged_on_position_changes_only():
     _, _, _, info = env.step(onehot(1))
     assert info["cost"] == 0.0                              # holding is free
     _, _, _, info = env.step(onehot(2))
-    assert np.isclose(info["cost"], 2 * (0.0002 + 0.0001))  # flip = 2 units traded
+    assert np.isclose(info["cost"], 2 * (0.0002 + 0.0001), atol=1e-6)  # flip = 2 units traded
     assert env.n_trades == 1
+
+
+def test_open_position_is_liquidated_at_episode_end():
+    env, _, r = _env(spread=0.0004, random_start=False, max_episode_steps=3)
+    env.reset()
+    env.step(onehot(1))
+    env.step(onehot(1))
+    eq_before = env.equity
+    _, _, done, info = env.step(onehot(1))
+    assert done and info["position"] == 0 and env.n_trades == 1
+    assert np.isclose(env.equity, eq_before * (1 + r[W + 2]) * (1 - 0.0002), rtol=1e-6)
+    assert np.isclose(info["cost"], 0.0002, atol=1e-6)
+
+
+def test_win_rate_accounts_for_exit_cost():
+    X, r, ts = _data()
+    r = r.copy()
+    r[W] = 0.0001  # tiny gain, smaller than the exit fill
+    env = RealisticTradingEnv(X, r, timestamps=ts, window=W, spread=0.0004, commission=0,
+                              slippage=0, swap_long=0, swap_short=0, stop_loss=None,
+                              max_drawdown=None, random_start=False, reward_scale=1.0)
+    env.reset()
+    env.step(onehot(1))
+    env.step(onehot(0))
+    assert env.n_trades == 1 and env.n_wins == 0
 
 
 def test_slippage_is_mostly_adverse_and_vol_scaled():
@@ -91,6 +116,24 @@ def test_swap_charged_once_per_day_rollover():
     assert len(charged) == 3                                # 72 hourly bars -> 3 rollovers
     assert all(np.isclose(s, 0.0001) or np.isclose(s, 0.0003) for s in charged)
     assert any(np.isclose(s, 0.0003) for s in charged)      # one Wednesday triple swap
+    # swap belongs to the position held overnight, not the one chosen at the rollover bar
+    env.reset()
+    env.t = W + (24 - W) - 1                                # bar just before the day boundary
+    _, _, _, info = env.step(onehot(0))                     # flat overnight
+    assert info["swap"] == 0.0
+    _, _, _, info = env.step(onehot(1))                     # open long at the boundary
+    assert info["swap"] == 0.0
+    env.t = 48
+    env.pos = 1
+    _, _, _, info = env.step(onehot(0))                     # close at boundary: still pays
+    assert np.isclose(info["swap"], 0.0001)
+
+
+def test_vol_ratio_is_causal():
+    X, r, ts = _data()
+    env_short = RealisticTradingEnv(X[:1000], r[:1000], window=W, vol_window=50, random_start=False)
+    env_long = RealisticTradingEnv(X, r, window=W, vol_window=50, random_start=False)
+    np.testing.assert_allclose(env_short.vol_ratio, env_long.vol_ratio[:1000])
 
 
 def test_stop_loss_forces_flat_and_caps_loss():
@@ -104,6 +147,7 @@ def test_stop_loss_forces_flat_and_caps_loss():
     _, _, done, info = env.step(onehot(1))
     assert info["forced_close"] and info["position"] == 0 and not done
     assert np.isclose(env.equity, 0.99)
+    assert np.isclose(info["pnl"], -0.01)
     assert env.sl_hits == 1 and env.n_trades == 1
 
 

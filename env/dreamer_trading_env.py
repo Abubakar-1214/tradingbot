@@ -145,7 +145,11 @@ class RealisticTradingEnv:
     # ------------------------------------------------------------------ setup
     @staticmethod
     def _rolling_vol_ratio(r, vol_window):
-        """Trailing std of returns (up to and excluding bar t) / median std."""
+        """Trailing std of returns (up to and excluding bar t) / expanding mean of that std.
+
+        Both numerator and denominator only use bars before t, so a fill's cost
+        never changes when later data is appended.
+        """
         r64 = r.astype(np.float64)
         csum = np.cumsum(np.insert(r64, 0, 0.0))
         csum2 = np.cumsum(np.insert(r64 ** 2, 0, 0.0))
@@ -155,9 +159,9 @@ class RealisticTradingEnv:
         mean = (csum[n] - csum[lo]) / cnt
         var = (csum2[n] - csum2[lo]) / cnt - mean ** 2
         vol = np.sqrt(np.maximum(var, 0.0))
-        baseline = np.median(vol[vol > 0]) if np.any(vol > 0) else 1.0
-        ratio = np.where(baseline > 0, vol / baseline, 1.0)
-        ratio[:2] = 1.0
+        baseline = np.cumsum(vol) / np.maximum(n, 1)
+        ratio = np.divide(vol, baseline, out=np.ones_like(vol), where=baseline > 0)
+        ratio[:vol_window] = 1.0
         return ratio.astype(np.float32)
 
     def _day_ids(self, timestamps):
@@ -255,22 +259,45 @@ class RealisticTradingEnv:
         rate = self.swap_long if pos > 0 else self.swap_short
         return -rate * nights  # positive number = cost
 
+    def _debit(self, frac):
+        """Charge a fractional fill cost against current equity; returns the cash amount."""
+        if frac == 0.0:
+            return 0.0
+        cash = frac * self.equity
+        self.equity = max(self.equity * (1.0 - frac), 1e-6)
+        self.total_costs += cash
+        return cash
+
+    def _liquidate(self, pos, t):
+        """Close an open position at bar t: pay the exit fill, then book the trade."""
+        cost = self._fill_cost(pos * self.leverage, t)
+        self._debit(cost)
+        self._close_trade()
+        return cost
+
     def step(self, action_onehot):
         prev_pos = self.pos
         new_pos = self._decode_action(action_onehot)
         t = self.t
         ret = float(self.r[t])
+        equity_before = self.equity
+        cost = 0.0
 
-        # 1. Execute position change at bar open.
-        size_change = (new_pos - prev_pos) * self.leverage
-        cost = self._fill_cost(size_change, t)
+        # 1. Rollover swap on exposure held from the previous bar into this one.
+        swap = self._swap_cost(t, prev_pos)
+        if swap:
+            self.total_swap += swap * self.equity
+            self.equity = max(self.equity * (1.0 - swap), 1e-6)
+
+        # 2. Execute position change at bar open: exit the old side, then enter the new.
         if new_pos != prev_pos:
             if prev_pos != 0:
-                self._close_trade()
+                cost += self._liquidate(prev_pos, t)
             if new_pos != 0:
+                cost += self._debit(self._fill_cost(new_pos * self.leverage, t))
                 self._open_trade()
 
-        # 2. Hold through the bar; SL/TP are checked against the bar's move.
+        # 3. Hold through the bar; SL/TP are checked against the bar's move.
         exposure = new_pos * self.leverage
         gross = exposure * ret
         forced_close = False
@@ -285,29 +312,29 @@ class RealisticTradingEnv:
                 forced_close = True
                 self.tp_hits += 1
 
-        swap = self._swap_cost(t, new_pos)
-
-        # 3. Account update (costs are fractions of pre-step equity).
-        net = gross - cost - swap
-        equity_before = self.equity
-        self.equity = max(equity_before * (1.0 + net), 1e-6)
-        self.total_costs += cost * equity_before
-        self.total_swap += swap * equity_before
-
+        self.equity = max(self.equity * (1.0 + gross), 1e-6)
         if new_pos != 0:
             self.trade_pnl += gross
             self.bars_in_trade += 1
 
         if forced_close:
-            exit_cost = self._fill_cost(exposure, t)
-            self.equity = max(self.equity * (1.0 - exit_cost), 1e-6)
-            self.total_costs += exit_cost * equity_before
-            self._close_trade()
+            cost += self._liquidate(new_pos, t)
             new_pos = 0
 
+        # 4. Termination; any position still open at episode end is liquidated.
+        self.t += 1
+        self.steps += 1
+        out_of_data = self.t >= self.T - 1
+        truncated = self.max_episode_steps is not None and self.steps >= self.max_episode_steps
+        blown_up = (self.max_drawdown is not None
+                    and 1.0 - self.equity / max(self.peak_equity, self.equity) >= self.max_drawdown)
+        done = bool(blown_up or out_of_data or truncated)
+        if done and new_pos != 0:
+            cost += self._liquidate(new_pos, t)
+            new_pos = 0
         self.pos = new_pos
 
-        # 4. Drawdown bookkeeping and reward.
+        # 5. Drawdown bookkeeping and reward.
         self.peak_equity = max(self.peak_equity, self.equity)
         prev_dd = self.drawdown
         self.drawdown = 1.0 - self.equity / self.peak_equity
@@ -317,26 +344,14 @@ class RealisticTradingEnv:
         reward = float(reward * self.reward_scale)
         self.rewards.append(reward)
 
-        # 5. Advance time and check termination.
-        self.t += 1
-        self.steps += 1
-        blown_up = self.max_drawdown is not None and self.drawdown >= self.max_drawdown
-        out_of_data = self.t >= self.T - 1
-        truncated = self.max_episode_steps is not None and self.steps >= self.max_episode_steps
-        done = bool(blown_up or out_of_data or truncated)
-
-        if done and self.pos != 0:
-            self._close_trade()
-            self.pos = 0
-
         obs = self._get_obs() if not done else np.zeros(self.observation_space, dtype=np.float32)
 
         info = {
             "equity": self.equity,
             "position": self.pos,
-            "pnl": net,
+            "pnl": self.equity / equity_before - 1.0,
             "return": ret,
-            "cost": cost,
+            "cost": cost / equity_before,  # fraction of pre-step equity
             "swap": swap,
             "drawdown": self.drawdown,
             "forced_close": forced_close,
