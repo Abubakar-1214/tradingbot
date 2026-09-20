@@ -158,6 +158,7 @@ def main():
     parser.add_argument('--device', type=str, default='auto', help='Device: cuda/mps/cpu/auto')
     parser.add_argument('--resume', type=str, default=None, help='Resume from checkpoint')
     parser.add_argument('--base-tf', type=str, default='M5', help='Base timeframe (M5/M15/H1)')
+    parser.add_argument('--save-every', type=int, default=SAVE_EVERY, help='Checkpoint save frequency')
     args = parser.parse_args()
 
     logger.info("="*70)
@@ -167,6 +168,7 @@ def main():
     logger.info(f"Batch size: {args.batch_size}")
     logger.info(f"Device: {args.device}")
     logger.info(f"Base timeframe: {args.base_tf}")
+    logger.info(f"Save every: {args.save_every:,} steps")
     logger.info("")
 
     # ========== LOAD ULTIMATE FEATURES ==========
@@ -303,7 +305,7 @@ def main():
             obs = next_obs
 
         # Save checkpoint
-        if (step + 1) % SAVE_EVERY == 0:
+        if (step + 1) % args.save_every == 0:
             checkpoint_path = os.path.join(
                 SAVE_DIR,
                 f"{SAVE_PREFIX}_step{step+1}.pt"
