@@ -273,7 +273,7 @@ def main():
             obs = env.reset()
             h, z = None, None
 
-    print(f"✅ Replay buffer filled with {len(agent.replay_buffer.buffer)} transitions")
+    print(f"✅ Replay buffer filled with {len(agent.replay_buffer)} transitions")
 
     print("\n" + "="*70)
     print("PHASE 2: Train DreamerV3 World Model + Policy")

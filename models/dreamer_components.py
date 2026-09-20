@@ -26,7 +26,14 @@ def symlog(x):
 
 def symexp(x):
     """Inverse of symlog"""
-    return torch.sign(x) * (torch.exp(torch.abs(x)) - 1)
+    return torch.sign(x) * (torch.exp(torch.abs(x).clamp(max=20.0)) - 1)
+
+
+def unimix_logits(logits, unimix=0.01):
+    """Mix categorical probabilities with a uniform distribution (DreamerV3 'unimix')"""
+    probs = F.softmax(logits.float(), dim=-1)
+    probs = (1 - unimix) * probs + unimix / logits.shape[-1]
+    return torch.log(probs)
 
 
 class RMSNorm(nn.Module):
@@ -97,12 +104,13 @@ class RSSM(nn.Module):
     - h_t (deterministic): GRU hidden state (memory)
     - z_t (stochastic): latent state (current market regime)
     """
-    def __init__(self, embed_dim=256, hidden_dim=512, stoch_dim=32, num_categories=32, action_dim=3):
+    def __init__(self, embed_dim=256, hidden_dim=512, stoch_dim=32, num_categories=32, action_dim=3, unimix=0.01):
         super().__init__()
         self.hidden_dim = hidden_dim
         self.stoch_dim = stoch_dim
         self.num_categories = num_categories
         self.action_dim = action_dim
+        self.unimix = unimix
 
         # Prior: p(z_t | h_t)
         self.prior_net = nn.Sequential(
@@ -141,14 +149,18 @@ class RSSM(nn.Module):
 
         # Compute posterior distribution
         posterior_logits = self.posterior_net(torch.cat([h, embed], dim=-1))
-        posterior_logits = posterior_logits.reshape(-1, self.stoch_dim, self.num_categories)
+        posterior_logits = unimix_logits(
+            posterior_logits.reshape(-1, self.stoch_dim, self.num_categories), self.unimix
+        )
 
         # Sample z_t from categorical distribution
         z = self._sample_categorical(posterior_logits)
 
         # Also compute prior for KL regularization
         prior_logits = self.prior_net(h)
-        prior_logits = prior_logits.reshape(-1, self.stoch_dim, self.num_categories)
+        prior_logits = unimix_logits(
+            prior_logits.reshape(-1, self.stoch_dim, self.num_categories), self.unimix
+        )
 
         return h, z, prior_logits, posterior_logits
 
@@ -162,21 +174,23 @@ class RSSM(nn.Module):
 
         # Sample from prior
         prior_logits = self.prior_net(h)
-        prior_logits = prior_logits.reshape(-1, self.stoch_dim, self.num_categories)
+        prior_logits = unimix_logits(
+            prior_logits.reshape(-1, self.stoch_dim, self.num_categories), self.unimix
+        )
         z = self._sample_categorical(prior_logits)
 
         return h, z, prior_logits
 
     def _sample_categorical(self, logits):
         """Sample from categorical distribution with straight-through estimator"""
-        # Sample during training, use mode during eval
+        probs = F.softmax(logits, dim=-1)
         if self.training:
-            # Gumbel-Softmax trick
-            dist = torch.distributions.OneHotCategorical(logits=logits)
-            z_one_hot = dist.sample()
+            z_one_hot = torch.distributions.OneHotCategorical(probs=probs).sample()
         else:
-            # Use argmax (mode) during evaluation
             z_one_hot = F.one_hot(logits.argmax(dim=-1), self.num_categories).float()
+
+        # Straight-through: forward uses the one-hot sample, backward uses probs gradient
+        z_one_hot = z_one_hot + probs - probs.detach()
 
         # Flatten the one-hot vectors
         return z_one_hot.reshape(-1, self.stoch_dim * self.num_categories)
@@ -185,24 +199,22 @@ class RSSM(nn.Module):
         """Concatenate h and z for full latent state"""
         return torch.cat([h, z], dim=-1)
 
-    def kl_loss(self, prior_logits, posterior_logits, free_nats=1.0, balance=0.8):
+    def kl_loss(self, prior_logits, posterior_logits, free_nats=1.0, dyn_scale=0.5, rep_scale=0.1):
         """
-        KL divergence with free bits and balancing
-        Prevents posterior collapse
+        DreamerV3 KL balancing with free bits:
+          dyn loss trains the prior towards the (stopped) posterior
+          rep loss trains the posterior towards the (stopped) prior
         """
-        prior = torch.distributions.Categorical(logits=prior_logits)
-        posterior = torch.distributions.Categorical(logits=posterior_logits)
+        def _kl(post_logits, pri_logits):
+            post = torch.distributions.Categorical(logits=post_logits)
+            pri = torch.distributions.Categorical(logits=pri_logits)
+            kl = torch.distributions.kl_divergence(post, pri).sum(dim=-1)  # (B,)
+            return torch.clamp(kl, min=free_nats)
 
-        # KL divergence
-        kl = torch.distributions.kl_divergence(posterior, prior)
+        dyn = _kl(posterior_logits.detach(), prior_logits)
+        rep = _kl(posterior_logits, prior_logits.detach())
 
-        # Free nats: don't penalize KL below this threshold
-        kl = torch.maximum(kl, torch.tensor(free_nats / self.stoch_dim, device=kl.device))
-
-        # KL balancing: mix between treating prior/posterior as constant
-        kl_balanced = balance * kl + (1 - balance) * kl.detach()
-
-        return kl_balanced.sum(dim=-1).mean()
+        return (dyn_scale * dyn + rep_scale * rep).mean()
 
 
 class Decoder(nn.Module):
@@ -220,8 +232,8 @@ class Decoder(nn.Module):
         )
 
     def forward(self, state):
-        """Returns mean of Gaussian distribution"""
-        return symexp(self.net(state))
+        """Returns predicted observation in symlog space (compare against symlog(obs))"""
+        return self.net(state)
 
 
 class RewardPredictor(nn.Module):
@@ -263,14 +275,16 @@ class Actor(nn.Module):
         """Returns action logits for categorical distribution"""
         return self.net(state)
 
+    def dist(self, state, unimix=0.01):
+        return torch.distributions.Categorical(logits=unimix_logits(self(state), unimix))
+
     def sample(self, state, deterministic=False):
         """Sample action from policy"""
         logits = self(state)
         if deterministic:
             action = F.one_hot(logits.argmax(dim=-1), self.action_dim).float()
         else:
-            dist = torch.distributions.Categorical(logits=logits)
-            action_idx = dist.sample()
+            action_idx = self.dist(state).sample()
             action = F.one_hot(action_idx, self.action_dim).float()
         return action
 

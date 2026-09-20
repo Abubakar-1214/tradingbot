@@ -59,23 +59,22 @@ def check_gpu():
             gpu_info["vram_gb"] = torch.cuda.get_device_properties(0).total_memory / (1024 ** 3)
 
             name_upper = gpu_info["name"].upper()
-            if "H200" in name_upper:
-                gpu_info["recommended_batch"] = 1024
-                gpu_info["time_per_1m_hrs"] = 0.5
-            elif "H100" in name_upper:
-                gpu_info["recommended_batch"] = 512
-                gpu_info["time_per_1m_hrs"] = 0.7
+            # DreamerV3 trains on batch_size x 64-step sequences; the paper uses 16x64.
+            # Very large batches mostly add CPU->GPU copy time (obs is ~10k floats/step).
+            if "H200" in name_upper or "H100" in name_upper:
+                gpu_info["recommended_batch"] = 128
+                gpu_info["time_per_1m_hrs"] = 2.0
             elif "A100" in name_upper:
-                gpu_info["recommended_batch"] = 512 if gpu_info["vram_gb"] > 50 else 256
+                gpu_info["recommended_batch"] = 64
                 gpu_info["time_per_1m_hrs"] = 3.0
             elif "V100" in name_upper:
-                gpu_info["recommended_batch"] = 128
+                gpu_info["recommended_batch"] = 32
                 gpu_info["time_per_1m_hrs"] = 8.0
             elif "T4" in name_upper:
-                gpu_info["recommended_batch"] = 128
+                gpu_info["recommended_batch"] = 32
                 gpu_info["time_per_1m_hrs"] = 14.0
             else:
-                gpu_info["recommended_batch"] = 128
+                gpu_info["recommended_batch"] = 32
                 gpu_info["time_per_1m_hrs"] = 10.0
     except Exception as e:
         print(f"[Warning] PyTorch CUDA check failed: {e}")
@@ -158,9 +157,9 @@ def main():
 
     # 1. Training Steps
     print("Choose Training Scale:")
-    print("  [1] Quick Pipeline Test   :     10,000 steps (~2-4 mins on H100)")
-    print("  [2] Short Initial Learning:    100,000 steps (~10-15 mins on H100)")
-    print("  [3] Full God Mode Model   :  1,000,000 steps (~1-1.5 hrs on H100) 🔥 [RECOMMENDED]")
+    print("  [1] Quick Pipeline Test   :     10,000 steps")
+    print("  [2] Short Initial Learning:    100,000 steps")
+    print("  [3] Full God Mode Model   :  1,000,000 steps 🔥 [RECOMMENDED]")
     print("  (or type custom number of steps)")
 
     step_choice = prompt_user(
@@ -241,7 +240,7 @@ def main():
     print(f"  • Checkpoint Save: Every {save_every:,} steps")
     print(f"  • Device         : {gpu['device']} ({gpu['name']})")
     print(f"  • Resume From    : {resume_checkpoint if resume_checkpoint else 'Fresh Start (0)'}")
-    print(f"  • Est. Runtime   : ~{est_hours:.2f} hours on this machine")
+    print(f"  • Est. Runtime   : ~{est_hours:.2f} hours (rough estimate; check tqdm rate after a few hundred steps)")
     print(f"  • Output Folder  : {CHECKPOINT_DIR}")
     print("═"*78)
 
