@@ -26,14 +26,15 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from features.ultimate_150_features import make_ultimate_features
 from models.dreamer_agent import DreamerV3Agent
+from env.dreamer_trading_env import DEFAULT_ENV_KWARGS, RealisticTradingEnv
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Environment settings
+# Environment settings (cost model defaults live in env/dreamer_trading_env.py)
 WINDOW = 64
-COST = 0.0001
 TRAIN_END_DATE = "2022-01-01"
+ENV_KWARGS = dict(DEFAULT_ENV_KWARGS, window=WINDOW)
 
 # DreamerV3 hyperparameters
 BATCH_SIZE = 16
@@ -44,111 +45,6 @@ SAVE_EVERY = 10_000
 
 SAVE_DIR = "train/dreamer_ultimate"
 SAVE_PREFIX = "ultimate_150_xauusd"
-
-
-class TradingEnvironment:
-    """
-    Trading environment for DreamerV3 with Ultimate 150+ features
-    """
-    def __init__(self, features, returns, window=64, cost_per_trade=0.0001):
-        self.X = features.astype(np.float32)
-        self.r = returns.astype(np.float32)
-        self.window = int(window)
-        self.cost = float(cost_per_trade)
-        self.T = len(self.r)
-
-        logger.info(f"Environment initialized:")
-        logger.info(f"  • Features: {self.X.shape}")
-        logger.info(f"  • Window: {self.window}")
-        logger.info(f"  • Cost: {self.cost:.4f}")
-        logger.info(f"  • Total steps: {self.T:,}")
-
-        self.reset()
-
-    def reset(self):
-        """Reset environment"""
-        self.t = self.window
-        self.pos = 0  # 0 = flat, 1 = long
-        self.equity = 1.0
-
-        return self._get_obs()
-
-    def _get_obs(self):
-        """
-        Get current observation
-
-        Returns:
-            Flattened observation with:
-            - Last WINDOW timesteps of features
-            - Current position
-        """
-        # Get window of features
-        w = self.X[self.t - self.window : self.t]  # (window, num_features)
-
-        # Flatten
-        obs = np.concatenate([w.reshape(-1), np.array([self.pos], dtype=np.float32)])
-
-        return obs.astype(np.float32)
-
-    def step(self, action_onehot):
-        """
-        Execute action
-
-        Args:
-            action_onehot: one-hot encoded action [flat, long]
-
-        Returns:
-            obs, reward, done, info
-        """
-        # Decode action (for long-only: 0=flat, 1=long)
-        new_pos = int(np.argmax(action_onehot))  # 0 or 1
-
-        # Ensure long-only
-        new_pos = max(0, min(1, new_pos))
-
-        # Position change
-        delta = abs(new_pos - self.pos)
-
-        # Costs
-        trade_cost = self.cost * delta
-
-        # PnL
-        ret = self.r[self.t]
-        pnl = self.pos * ret - trade_cost
-
-        # Update state
-        self.equity *= (1 + pnl)
-        self.pos = new_pos
-        self.t += 1
-
-        # Reward
-        reward = pnl
-
-        # Done
-        done = (self.t >= self.T - 1)
-
-        # Next observation
-        obs = self._get_obs() if not done else np.zeros_like(self._get_obs())
-
-        info = {
-            'equity': self.equity,
-            'position': self.pos,
-            'pnl': pnl,
-            'return': ret
-        }
-
-        return obs, reward, done, info
-
-    @property
-    def observation_space(self):
-        """Observation space dimension"""
-        # Window * num_features + 1 (position)
-        return self.window * self.X.shape[1] + 1
-
-    @property
-    def action_space(self):
-        """Action space dimension (2 for long-only: flat or long)"""
-        return 2
 
 
 def main():
@@ -191,6 +87,7 @@ def main():
 
     X_train = X[:train_idx]
     r_train = returns[:train_idx]
+    ts_train = timestamps[:train_idx]
 
     logger.info(f"  • Train samples: {len(X_train):,}")
     logger.info(f"  • Train period: {timestamps[0]} to {timestamps[train_idx-1]}")
@@ -198,7 +95,7 @@ def main():
     # ========== CREATE ENVIRONMENT ==========
     logger.info("\n🎮 Creating trading environment...")
 
-    env = TradingEnvironment(X_train, r_train, window=WINDOW, cost_per_trade=COST)
+    env = RealisticTradingEnv(X_train, r_train, timestamps=ts_train, **ENV_KWARGS)
 
     logger.info(f"\n✅ Environment ready:")
     logger.info(f"  • Observation dim: {env.observation_space}")
@@ -296,6 +193,15 @@ def main():
 
             if episode_reward > best_reward:
                 best_reward = episode_reward
+
+            if episode_count % 10 == 0:
+                st = env.episode_stats()
+                logger.info(
+                    f"\nEpisode {episode_count}: return {st['return_pct']:+.2f}% | "
+                    f"maxDD {st['max_drawdown_pct']:.2f}% | trades {st['trades']} | "
+                    f"win {st['win_rate']:.0%} | SL {st['sl_hits']} | "
+                    f"costs {st['costs_paid']:.4f} | reward {episode_reward:.2f}"
+                )
 
             # Reset
             obs = env.reset()

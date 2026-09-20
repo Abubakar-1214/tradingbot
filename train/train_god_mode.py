@@ -22,11 +22,12 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from features.god_mode_features import make_features
 from models.dreamer_agent import DreamerV3Agent
+from env.dreamer_trading_env import DEFAULT_ENV_KWARGS, EVAL_ENV_OVERRIDES, RealisticTradingEnv
 
 
 WINDOW = 64
-COST = 0.0001
 TRAIN_END_DATE = "2022-01-01"
+ENV_KWARGS = dict(DEFAULT_ENV_KWARGS, window=WINDOW)
 
 # DreamerV3 hyperparameters
 BATCH_SIZE = 16
@@ -37,98 +38,6 @@ SAVE_EVERY = 10_000
 
 SAVE_DIR = "train/dreamer"
 SAVE_PREFIX = "god_mode_xauusd"
-
-
-class TradingEnvironment:
-    """
-    Trading environment for DreamerV3 with God Mode features
-    """
-    def __init__(self, features, returns, window=64, cost_per_trade=0.0001):
-        self.X = features.astype(np.float32)
-        self.r = returns.astype(np.float32)
-        self.window = int(window)
-        self.cost = float(cost_per_trade)
-        self.T = len(self.r)
-
-        self.reset()
-
-    def reset(self):
-        """Reset environment"""
-        self.t = self.window
-        self.pos = 0  # 0 = flat, 1 = long
-        self.equity = 1.0
-
-        return self._get_obs()
-
-    def _get_obs(self):
-        """
-        Get current observation
-
-        Returns:
-            Flattened observation with:
-            - Last WINDOW timesteps of features
-            - Current position
-        """
-        # Get window of features
-        w = self.X[self.t - self.window : self.t]  # (window, num_features)
-
-        # Flatten
-        obs = np.concatenate([w.reshape(-1), np.array([self.pos], dtype=np.float32)])
-
-        return obs.astype(np.float32)
-
-    def step(self, action_onehot):
-        """
-        Execute action
-
-        Args:
-            action_onehot: one-hot encoded action [flat, long]
-
-        Returns:
-            obs, reward, done, info
-        """
-        # Decode action (for long-only: 0=flat, 1=long)
-        new_pos = int(np.argmax(action_onehot))  # 0 or 1
-
-        # Ensure long-only
-        new_pos = max(0, min(1, new_pos))
-
-        # Position change
-        delta = abs(new_pos - self.pos)
-
-        # Costs
-        trade_cost = self.cost * delta
-
-        # PnL from holding previous position
-        pnl = self.pos * self.r[self.t]
-
-        # Reward
-        reward = pnl - trade_cost
-
-        # Update equity
-        self.equity *= (1.0 + reward)
-
-        # Update position
-        self.pos = new_pos
-
-        # Advance time
-        self.t += 1
-
-        # Check if done
-        done = self.t >= self.T
-
-        # Get next observation
-        if not done:
-            obs = self._get_obs()
-        else:
-            obs = np.zeros_like(self._get_obs())
-
-        info = {
-            "equity": float(self.equity),
-            "pos": int(self.pos),
-        }
-
-        return obs, float(reward), done, info
 
 
 def main():
@@ -177,7 +86,7 @@ def main():
     print(f"   Steps: {train_steps:,}")
     print(f"   Batch size: {batch_size}")
     print(f"   Multi-timeframe: {args.multi_timeframe}")
-    print(f"   Cost per trade: {COST*100:.2f}%")
+    print(f"   Spread/commission/slippage: {ENV_KWARGS['spread']*1e4:.1f}/{ENV_KWARGS['commission']*1e4:.1f}/{ENV_KWARGS['slippage']*1e4:.1f} bps")
 
     # Load data with GOD MODE features
     print(f"\n{'='*70}")
@@ -200,8 +109,9 @@ def main():
 
     # Split train/test
     train_end = np.searchsorted(df_time["time"].to_numpy(), TRAIN_END_DATE)
-    X_train, r_train = X[:train_end], r[:train_end]
-    X_test, r_test = X[train_end:], r[train_end:]
+    ts = pd.to_datetime(df_time["time"]).to_numpy()
+    X_train, r_train, ts_train = X[:train_end], r[:train_end], ts[:train_end]
+    X_test, r_test, ts_test = X[train_end:], r[train_end:], ts[train_end:]
 
     print(f"\n✅ Data loaded successfully!")
     print(f"   Train: {len(X_train)} bars ({df_time['time'].iloc[0]} to {TRAIN_END_DATE})")
@@ -209,7 +119,7 @@ def main():
     print(f"   Features: {X.shape[1]} (God Mode enabled)")
 
     # Create environment
-    env = TradingEnvironment(X_train, r_train, window=WINDOW, cost_per_trade=COST)
+    env = RealisticTradingEnv(X_train, r_train, timestamps=ts_train, **ENV_KWARGS)
 
     # Observation dimension
     obs_dim = env._get_obs().shape[0]
@@ -225,7 +135,7 @@ def main():
 
     agent = DreamerV3Agent(
         obs_dim=obs_dim,
-        action_dim=2,  # flat, long (long-only for now)
+        action_dim=env.action_space,  # flat, long, short
         device=device,
         embed_dim=256,
         hidden_dim=512,
@@ -258,8 +168,8 @@ def main():
 
     for step in tqdm(range(PREFILL_STEPS), desc="Prefilling"):
         # Random action
-        action_onehot = np.zeros(2, dtype=np.float32)
-        action_onehot[np.random.randint(0, 2)] = 1.0
+        action_onehot = np.zeros(env.action_space, dtype=np.float32)
+        action_onehot[np.random.randint(0, env.action_space)] = 1.0
 
         # Step
         next_obs, reward, done, info = env.step(action_onehot)
@@ -336,7 +246,10 @@ def main():
     print("PHASE 3: Evaluation on Test Set")
     print("="*70)
 
-    test_env = TradingEnvironment(X_test, r_test, window=WINDOW, cost_per_trade=COST)
+    test_env = RealisticTradingEnv(
+        X_test, r_test, timestamps=ts_test,
+        **{**ENV_KWARGS, **EVAL_ENV_OVERRIDES},
+    )
     obs = test_env.reset()
     h, z = None, None
 
@@ -348,22 +261,23 @@ def main():
         obs, reward, done, info = test_env.step(action_onehot)
 
         test_rewards.append(reward)
-        test_positions.append(info['pos'])
+        test_positions.append(info['position'])
 
         if done:
             break
 
     # Calculate metrics
+    st = test_env.episode_stats()
     final_equity = test_env.equity
-    total_return = (final_equity - 1.0) * 100
-    num_trades = sum(np.diff([0] + test_positions) != 0)
-    pct_time_long = np.mean(test_positions) * 100
+    total_return = st['return_pct']
+    test_positions = np.array(test_positions)
 
-    print(f"\n📊 Test Results:")
+    print(f"\n📊 Test Results (after spread/commission/slippage/swap):")
     print(f"   Final Equity: {final_equity:.4f}")
     print(f"   Return: {total_return:+.2f}%")
-    print(f"   Trades: {num_trades}")
-    print(f"   % Time Long: {pct_time_long:.1f}%")
+    print(f"   Max Drawdown: {st['max_drawdown_pct']:.2f}%")
+    print(f"   Trades: {st['trades']} | Win rate: {st['win_rate']:.1%} | SL hits: {st['sl_hits']}")
+    print(f"   % Time Long: {np.mean(test_positions == 1) * 100:.1f}% | Short: {np.mean(test_positions == -1) * 100:.1f}%")
 
     print("\n" + "="*70)
     print("🎉 GOD MODE TRAINING COMPLETE!")

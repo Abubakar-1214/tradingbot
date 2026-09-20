@@ -16,11 +16,12 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from features.make_features import make_features
 from models.dreamer_agent import DreamerV3Agent
+from env.dreamer_trading_env import DEFAULT_ENV_KWARGS, EVAL_ENV_OVERRIDES, RealisticTradingEnv
 
 
 WINDOW = 64
-COST = 0.0001
 TRAIN_END_DATE = "2022-01-01"
+ENV_KWARGS = dict(DEFAULT_ENV_KWARGS, window=WINDOW)
 
 # DreamerV3 hyperparameters
 BATCH_SIZE = 16
@@ -31,98 +32,6 @@ SAVE_EVERY = 10_000
 
 SAVE_DIR = "train/dreamer"
 SAVE_PREFIX = "dreamer_xauusd"
-
-
-class TradingEnvironment:
-    """
-    Simple trading environment for DreamerV3
-    Similar to XAUUSDTradingEnv but returns flat numpy arrays
-    """
-    def __init__(self, features, returns, window=64, cost_per_trade=0.0001):
-        self.X = features.astype(np.float32)
-        self.r = returns.astype(np.float32)
-        self.window = int(window)
-        self.cost = float(cost_per_trade)
-        self.T = len(self.r)
-
-        self.reset()
-
-    def reset(self):
-        """Reset environment"""
-        self.t = self.window
-        self.pos = 0  # 0 = flat, 1 = long
-        self.equity = 1.0
-
-        return self._get_obs()
-
-    def _get_obs(self):
-        """Get current observation"""
-        w = self.X[self.t - self.window : self.t]  # (window, F)
-        obs = np.concatenate([w.reshape(-1), np.array([self.pos], dtype=np.float32)])
-        return obs.astype(np.float32)
-
-    def step(self, action_onehot):
-        """
-        Execute action
-
-        Args:
-            action_onehot: one-hot encoded action [flat, long, short] or [flat, long]
-
-        Returns:
-            obs, reward, done, info
-        """
-        # Decode action (for long-only: 0=flat, 1=long)
-        # For long/short: 0=flat, 1=long, 2=short
-        if len(action_onehot) == 2:
-            new_pos = int(np.argmax(action_onehot))  # 0 or 1
-        else:
-            action_idx = int(np.argmax(action_onehot))
-            if action_idx == 0:
-                new_pos = 0  # flat
-            elif action_idx == 1:
-                new_pos = 1  # long
-            else:
-                new_pos = -1  # short (not used for long-only)
-
-        # Ensure long-only
-        new_pos = max(0, min(1, new_pos))
-
-        # Position change
-        delta = abs(new_pos - self.pos)
-
-        # Costs
-        trade_cost = self.cost * delta
-
-        # PnL from holding previous position
-        pnl = self.pos * self.r[self.t]
-
-        # Reward
-        reward = pnl - trade_cost
-
-        # Update equity
-        self.equity *= (1.0 + reward)
-
-        # Update position
-        self.pos = new_pos
-
-        # Advance time
-        self.t += 1
-
-        # Check if done
-        done = self.t >= self.T
-
-        # Get next observation
-        if not done:
-            obs = self._get_obs()
-        else:
-            obs = np.zeros_like(self._get_obs())
-
-        info = {
-            "equity": float(self.equity),
-            "pos": int(self.pos),
-        }
-
-        return obs, float(reward), done, info
 
 
 def main():
@@ -177,13 +86,14 @@ def main():
 
     # Split train/test
     train_end = np.searchsorted(df["time"].to_numpy(), np.datetime64(TRAIN_END_DATE))
-    X_train, r_train = X[:train_end], r[:train_end]
-    X_test, r_test = X[train_end:], r[train_end:]
+    ts = df["time"].to_numpy()
+    X_train, r_train, ts_train = X[:train_end], r[:train_end], ts[:train_end]
+    X_test, r_test, ts_test = X[train_end:], r[train_end:], ts[train_end:]
 
     print(f"Train: {len(X_train)} bars | Test: {len(X_test)} bars")
 
     # Create environment
-    env = TradingEnvironment(X_train, r_train, window=WINDOW, cost_per_trade=COST)
+    env = RealisticTradingEnv(X_train, r_train, timestamps=ts_train, **ENV_KWARGS)
 
     # Observation dimension
     obs_dim = env._get_obs().shape[0]
@@ -193,7 +103,7 @@ def main():
     print("\nInitializing DreamerV3 Agent...")
     agent = DreamerV3Agent(
         obs_dim=obs_dim,
-        action_dim=2,  # flat, long (long-only for now)
+        action_dim=env.action_space,  # flat, long, short
         device=device,
         embed_dim=256,
         hidden_dim=512,
@@ -216,8 +126,8 @@ def main():
 
     for step in tqdm(range(PREFILL_STEPS), desc="Prefilling"):
         # Random action
-        action_onehot = np.zeros(2, dtype=np.float32)
-        action_onehot[np.random.randint(0, 2)] = 1.0
+        action_onehot = np.zeros(env.action_space, dtype=np.float32)
+        action_onehot[np.random.randint(0, env.action_space)] = 1.0
 
         # Step
         next_obs, reward, done, info = env.step(action_onehot)
@@ -295,7 +205,10 @@ def main():
     print("PHASE 3: Evaluation on Test Set")
     print("="*60)
 
-    test_env = TradingEnvironment(X_test, r_test, window=WINDOW, cost_per_trade=COST)
+    test_env = RealisticTradingEnv(
+        X_test, r_test, timestamps=ts_test,
+        **{**ENV_KWARGS, **EVAL_ENV_OVERRIDES},
+    )
     obs = test_env.reset()
     h, z = None, None
 
@@ -307,20 +220,22 @@ def main():
         obs, reward, done, info = test_env.step(action_onehot)
 
         equities.append(info["equity"])
-        positions.append(info["pos"])
+        positions.append(info["position"])
 
         if done:
             break
 
-    trades = int(np.sum(np.abs(np.diff(positions)) > 0))
-    pct_time_long = float(np.mean(np.array(positions) == 1))
+    st = test_env.episode_stats()
+    positions = np.array(positions)
     final_equity = float(equities[-1])
 
-    print(f"\n📊 Test Results:")
+    print(f"\n📊 Test Results (after spread/commission/slippage/swap):")
     print(f"   Final Equity: {final_equity:.4f}")
-    print(f"   Return: {(final_equity - 1.0) * 100:.2f}%")
-    print(f"   Trades: {trades}")
-    print(f"   % Time Long: {pct_time_long * 100:.1f}%")
+    print(f"   Return: {st['return_pct']:.2f}%")
+    print(f"   Max Drawdown: {st['max_drawdown_pct']:.2f}%")
+    print(f"   Trades: {st['trades']} | Win rate: {st['win_rate']:.1%} | SL hits: {st['sl_hits']}")
+    print(f"   Costs paid: {st['costs_paid']:.4f} | Swap paid: {st['swap_paid']:.4f}")
+    print(f"   % Time Long: {np.mean(positions == 1) * 100:.1f}% | Short: {np.mean(positions == -1) * 100:.1f}%")
 
     print("\n🎉 Training Complete! The World Model has learned the Physics of the Market.")
     print("   Next: Implement MCTS to achieve true 'Stockfish' lookahead capability.")

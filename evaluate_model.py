@@ -20,68 +20,10 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from features.ultimate_150_features import make_ultimate_features
 from models.dreamer_agent import DreamerV3Agent
+from env.dreamer_trading_env import DEFAULT_ENV_KWARGS, EVAL_ENV_OVERRIDES, RealisticTradingEnv
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-
-class TradingEnvironment:
-    """Simple trading environment for evaluation"""
-    def __init__(self, features, returns, window=64, cost_per_trade=0.0001):
-        self.X = features.astype(np.float32)
-        self.r = returns.astype(np.float32)
-        self.window = int(window)
-        self.cost = float(cost_per_trade)
-        self.T = len(self.r)
-        self.reset()
-
-    def reset(self):
-        self.t = self.window
-        self.pos = 0
-        self.equity = 1.0
-        return self._get_obs()
-
-    def _get_obs(self):
-        w = self.X[self.t - self.window : self.t]
-        obs = np.concatenate([w.reshape(-1), np.array([self.pos], dtype=np.float32)])
-        return obs.astype(np.float32)
-
-    def step(self, action_onehot):
-        # action_onehot: [flat, long] probabilities
-        action = np.argmax(action_onehot)  # 0 = flat, 1 = long
-
-        # Get return
-        ret = self.r[self.t]
-
-        # Calculate reward
-        if action == 1:  # Long position
-            reward = ret - self.cost  # Profit/loss minus transaction cost
-            self.pos = 1
-        else:  # Flat position
-            reward = -self.cost if self.pos == 1 else 0  # Only cost if exiting position
-            self.pos = 0
-
-        # Update equity
-        if action == 1:
-            self.equity *= (1 + ret - self.cost)
-        elif self.pos == 1:  # Closing position
-            self.equity *= (1 - self.cost)
-
-        # Move forward
-        self.t += 1
-        done = (self.t >= self.T)
-
-        next_obs = self._get_obs() if not done else self._get_obs()
-
-        return next_obs, reward, done, {'equity': self.equity, 'position': self.pos}
-
-    @property
-    def observation_space(self):
-        return self.window * self.X.shape[1] + 1
-
-    @property
-    def action_space(self):
-        return 2  # flat or long
 
 
 def evaluate_model(agent, env, timestamps):
@@ -145,7 +87,9 @@ def evaluate_model(agent, env, timestamps):
     win_rate = np.mean(rewards > 0) * 100 if len(rewards) > 0 else 0
 
     # Position statistics
-    long_pct = np.mean(positions) * 100 if len(positions) > 0 else 0
+    long_pct = np.mean(positions == 1) * 100 if len(positions) > 0 else 0
+    short_pct = np.mean(positions == -1) * 100 if len(positions) > 0 else 0
+    stats = env.episode_stats()
 
     metrics = {
         'total_return': total_return,
@@ -154,8 +98,13 @@ def evaluate_model(agent, env, timestamps):
         'max_drawdown': max_drawdown,
         'win_rate': win_rate,
         'final_equity': equity_curve[-1],
-        'num_trades': len(positions),
+        'num_trades': stats['trades'],
+        'trade_win_rate': stats['win_rate'] * 100,
+        'sl_hits': stats['sl_hits'],
+        'costs_paid': stats['costs_paid'],
+        'swap_paid': stats['swap_paid'],
         'long_percentage': long_pct,
+        'short_percentage': short_pct,
     }
 
     return metrics, equity_curve, positions, dates
@@ -211,7 +160,12 @@ def print_metrics(metrics, title="EVALUATION RESULTS"):
     logger.info(f"🎯 Win Rate:          {metrics['win_rate']:>10.2f}%")
     logger.info(f"💵 Final Equity:      {metrics['final_equity']:>10.2f}x")
     logger.info(f"📊 Long %:            {metrics['long_percentage']:>10.2f}%")
+    logger.info(f"📊 Short %:           {metrics['short_percentage']:>10.2f}%")
     logger.info(f"🔄 Num Trades:        {metrics['num_trades']:>10,}")
+    logger.info(f"🎯 Trade Win Rate:    {metrics['trade_win_rate']:>10.2f}%")
+    logger.info(f"🛑 Stop-loss hits:    {metrics['sl_hits']:>10,}")
+    logger.info(f"💸 Costs paid:        {metrics['costs_paid']:>10.4f}")
+    logger.info(f"🌙 Swap paid:         {metrics['swap_paid']:>10.4f}")
     logger.info("="*70 + "\n")
 
 
@@ -256,7 +210,11 @@ def main():
     logger.info(f"   • Date range: {timestamps_eval[0]} to {timestamps_eval[-1]}")
 
     # ========== CREATE ENVIRONMENT ==========
-    env = TradingEnvironment(X_eval, returns_eval, window=64, cost_per_trade=0.0001)
+    # Same cost model as training, but one continuous pass over the whole period.
+    env = RealisticTradingEnv(
+        X_eval, returns_eval, timestamps=timestamps_eval,
+        **{**DEFAULT_ENV_KWARGS, **EVAL_ENV_OVERRIDES},
+    )
 
     # ========== LOAD AGENT ==========
     logger.info(f"\n🤖 Loading model from: {args.checkpoint}")
