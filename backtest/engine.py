@@ -23,17 +23,15 @@ when trade_on_close=False).
 """
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple, Type, Union
 
 import numpy as np
 import pandas as pd
-
 from backtesting import Backtest
 
 from backtest.costs import CostModel
-from backtest.strategies import SmaCrossAtr
 
 # Column names required by backtesting.py
 OHLCV = ("Open", "High", "Low", "Close", "Volume")
@@ -51,11 +49,11 @@ class BacktestResult:
     trades: pd.DataFrame
     equity_curve: pd.DataFrame
     cost_model: CostModel
-    params: Dict[str, object] = field(default_factory=dict)
+    params: dict[str, object] = field(default_factory=dict)
 
     # --- convenience metrics ------------------------------------------------- #
     @property
-    def metrics(self) -> Dict[str, float]:
+    def metrics(self) -> dict[str, float]:
         s = self.stats
         n_trades = int(s["# Trades"])
         return {
@@ -91,8 +89,8 @@ def prepare_ohlc(df: pd.DataFrame) -> pd.DataFrame:
     """Convert a lower-case OHLC CSV frame into backtesting.py's input format.
 
     Accepts columns: time/open/high/low/close[/volume|tick_volume] or already
-    capitalized.  Returns a DataFrame with a DatetimeIndex and the exact
-    OHLCV capitalized columns backtesting.py 0.6.2 requires.
+    capitalized. Returns a DatetimeIndex with the required OHLCV columns and
+    an optional strategy signal column.
     """
     out = df.copy()
     lower_to_upper = {"open": "Open", "high": "High", "low": "Low",
@@ -129,18 +127,21 @@ def prepare_ohlc(df: pd.DataFrame) -> pd.DataFrame:
         raise ValueError("Invalid OHLC: high < max(open, close, low)")
     if not (out["Low"] <= out[["Open", "Close", "High"]].min(axis=1)).all():
         raise ValueError("Invalid OHLC: low > min(open, close, high)")
-    return out[[c for c in OHLCV if c in out.columns]]
+    columns = [c for c in OHLCV if c in out.columns]
+    if "signal" in out.columns:
+        columns.append("signal")
+    return out[columns]
 
 
 def run_backtest(
     data: pd.DataFrame,
-    strategy: Type,
-    cost: Union[CostModel, None] = None,
+    strategy: type,
+    cost: CostModel | None = None,
     cash: float = 10_000.0,
     trade_on_close: bool = False,
-    strategy_params: Optional[Dict[str, object]] = None,
+    strategy_params: dict[str, object] | None = None,
     data_name: str = "data",
-    strategy_name: Optional[str] = None,
+    strategy_name: str | None = None,
 ) -> BacktestResult:
     """Run one deterministic backtest and return typed results."""
     ohlc = prepare_ohlc(data)
@@ -178,7 +179,7 @@ def run_backtest(
 
 def walk_forward(
     data: pd.DataFrame,
-    strategy: Type,
+    strategy: type,
     cost: CostModel,
     train_bars: int = 800,
     test_bars: int = 300,
@@ -186,7 +187,7 @@ def walk_forward(
     cash: float = 10_000.0,
     trade_on_close: bool = False,
     data_name: str = "data",
-) -> List[BacktestResult]:
+) -> list[BacktestResult]:
     """Honest walk-forward backtest with purge/embargo between windows.
 
     The train window is used ONLY to fit/select the strategy parameters (the
@@ -198,7 +199,7 @@ def walk_forward(
     """
     ohlc = prepare_ohlc(data)
     n = len(ohlc)
-    results: List[BacktestResult] = []
+    results: list[BacktestResult] = []
     start = 0
     window = 0
     while start + train_bars + embargo_bars + test_bars <= n:
@@ -206,7 +207,6 @@ def walk_forward(
         test_start = train_end + embargo_bars
         test_end = test_start + test_bars
 
-        train = ohlc.iloc[start:train_end]
         test = ohlc.iloc[test_start:test_end]
 
         # (No hyper-parameter search in this release — parameters come from
@@ -234,7 +234,7 @@ def walk_forward(
     return results
 
 
-def summarize_walk_forward(results: Sequence[BacktestResult]) -> Dict[str, float]:
+def summarize_walk_forward(results: Sequence[BacktestResult]) -> dict[str, float]:
     """Aggregate per-window metrics into one honest summary (equal-weight)."""
     if not results:
         return {}
@@ -242,7 +242,7 @@ def summarize_walk_forward(results: Sequence[BacktestResult]) -> Dict[str, float
         "total_return_pct", "annual_return_pct", "sharpe", "sortino",
         "max_drawdown_pct", "win_rate_pct", "profit_factor", "num_trades",
     ]
-    out: Dict[str, float] = {}
+    out: dict[str, float] = {}
     for k in keys:
         vals = [float(r.metrics[k]) for r in results]
         out[k] = float(np.mean(vals))

@@ -30,32 +30,36 @@ import logging
 
 import numpy as np
 
-logger = logging.getLogger(__name__)
+from core.observation import ACCOUNT_STATE_DIM, AccountState, build_observation
 
-ACCOUNT_STATE_DIM = 5
+logger = logging.getLogger(__name__)
 
 # Shared defaults for the Dreamer training/evaluation scripts. Costs are
 # fractions of notional: 1e-4 = 1 bp = $0.20 on $2000 gold.
-DEFAULT_ENV_KWARGS = dict(
-    window=64,
-    allow_short=True,
-    leverage=1.0,
-    spread=0.00025,        # 2.5 bp round-trip spread (~$0.50)
-    commission=0.00003,    # 0.3 bp per side
-    slippage=0.00005,      # mean |slippage| per fill, vol-scaled, mostly adverse
-    swap_long=-0.00004,    # daily financing, fraction of notional
-    swap_short=-0.00002,
-    stop_loss=0.01,        # 1% adverse move on a trade -> forced close
-    take_profit=None,
-    max_drawdown=0.30,     # 30% drawdown from peak ends the episode
-    drawdown_penalty=0.0,
-    reward_scale=100.0,    # 1% equity change -> reward 1.0
-    max_episode_steps=4096,
-    random_start=True,
-)
+DEFAULT_ENV_KWARGS = {
+    "window": 64,
+    "allow_short": True,
+    "leverage": 1.0,
+    "spread": 0.00025,        # 2.5 bp round-trip spread (~$0.50)
+    "commission": 0.00003,    # 0.3 bp per side
+    "slippage": 0.00005,      # mean |slippage| per fill, vol-scaled, mostly adverse
+    "swap_long": -0.00004,    # daily financing, fraction of notional
+    "swap_short": -0.00002,
+    "stop_loss": 0.01,        # 1% adverse move on a trade -> forced close
+    "take_profit": None,
+    "max_drawdown": 0.30,     # 30% drawdown from peak ends the episode
+    "drawdown_penalty": 0.0,
+    "reward_scale": 100.0,    # 1% equity change -> reward 1.0
+    "max_episode_steps": 4096,
+    "random_start": True,
+}
 
 # Evaluation: one continuous pass over the period, same costs, no circuit breaker.
-EVAL_ENV_OVERRIDES = dict(max_episode_steps=None, random_start=False, max_drawdown=None)
+EVAL_ENV_OVERRIDES = {
+    "max_episode_steps": None,
+    "random_start": False,
+    "max_drawdown": None,
+}
 
 
 class RealisticTradingEnv:
@@ -207,17 +211,24 @@ class RealisticTradingEnv:
         return self._get_obs()
 
     def _account_state(self):
-        return np.array([
-            float(self.pos),
-            float(np.clip(self.trade_pnl * 100.0, -10.0, 10.0)),
-            float(np.log1p(self.bars_in_trade)) / 5.0,
-            float(self.drawdown),
-            float(np.log(max(self.equity, 1e-6))),
-        ], dtype=np.float32)
+        return AccountState(
+            position=self.pos,
+            trade_pnl=self.trade_pnl,
+            bars_in_trade=self.bars_in_trade,
+            drawdown=self.drawdown,
+            equity_ratio=self.equity,
+        ).to_vector()
 
     def _get_obs(self):
         w = self.X[self.t - self.window:self.t]
-        return np.concatenate([w.reshape(-1), self._account_state()]).astype(np.float32)
+        account = AccountState(
+            position=self.pos,
+            trade_pnl=self.trade_pnl,
+            bars_in_trade=self.bars_in_trade,
+            drawdown=self.drawdown,
+            equity_ratio=self.equity,
+        )
+        return build_observation(w, account)
 
     # ------------------------------------------------------------- execution
     def _decode_action(self, action_onehot):

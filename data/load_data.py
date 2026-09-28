@@ -1,4 +1,5 @@
 from pathlib import Path
+
 import pandas as pd
 
 
@@ -62,12 +63,13 @@ def load_ohlc_csv(path: str | Path) -> pd.DataFrame:
     cols_to_keep = ["time", "open", "high", "low", "close"]
     if "tick_volume" in df.columns:
         cols_to_keep.append("tick_volume")
+    if "volume" in df.columns:
+        cols_to_keep.append("volume")
 
     # Keep macro columns if they exist
     for col in df.columns:
-        if col.endswith("_close") or col.endswith("_ret") or col.endswith("_chg"):
-            if col not in cols_to_keep:
-                cols_to_keep.append(col)
+        if col not in cols_to_keep and col.endswith(("_close", "_ret", "_chg")):
+            cols_to_keep.append(col)
 
     out = df[[c for c in cols_to_keep if c in df.columns]].copy()
     return out

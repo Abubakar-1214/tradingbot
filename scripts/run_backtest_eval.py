@@ -19,20 +19,35 @@ stochastic element (SeededRandom) uses np.random.default_rng(SEED).
 """
 from __future__ import annotations
 
+import argparse
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 
+import numpy as np
 import pandas as pd
 
 from backtest.baselines import BuyHold, SeededRandom
 from backtest.costs import CostModel
-from backtest.engine import prepare_ohlc, run_backtest, walk_forward, summarize_walk_forward
+from backtest.engine import (
+    prepare_ohlc,
+    run_backtest,
+    summarize_walk_forward,
+    walk_forward,
+)
+from backtest.model_signals import model_signal_frame
 from backtest.report import save_results, write_report
-from backtest.strategies import SmaCrossAtr, RsiReversion, DonchianBreakout
+from backtest.strategies import (
+    DonchianBreakout,
+    MlSignalStrategy,
+    RsiReversion,
+    SmaCrossAtr,
+)
+from core.model_artifacts import load_manifest
+from train.data import load_bars
 
 SEED = 42
 
@@ -57,8 +72,11 @@ def load_ohlc(path: Path) -> pd.DataFrame:
     return prepare_ohlc(df)
 
 
-def main() -> int:
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+def main(argv=None) -> int:
+    parser = argparse.ArgumentParser(description="Run the honest full backtest evaluation")
+    parser.add_argument("--manifest", help="optional production model manifest")
+    args = parser.parse_args(argv)
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     out_dir = REPO / "research" / "backtest_results" / f"full_eval_{ts}"
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -79,6 +97,31 @@ def main() -> int:
             print(f"    trades={m['num_trades']} return={m['total_return_pct']:.2f}% "
                   f"sharpe={m['sharpe']:.2f} maxDD={m['max_drawdown_pct']:.2f}%")
 
+        manifest = load_manifest(args.manifest) if args.manifest else None
+        timeframe = "D1" if data_name == "xauusd_d1" else "H1"
+        if manifest and manifest.timeframe.upper() == timeframe:
+            model_ohlc = load_bars(path)
+            signal = model_signal_frame(
+                args.manifest,
+                model_ohlc,
+                model_ohlc["time"].iloc[0],
+                model_ohlc["time"].iloc[-1],
+            )
+            model_ohlc["signal"] = signal.to_numpy(dtype=np.int8)
+            print("  running supplied model ...")
+            model_result = run_backtest(
+                model_ohlc,
+                MlSignalStrategy,
+                cost=COST,
+                data_name=data_name,
+                strategy_params={
+                    "signal_col": "signal",
+                    "allow_short": manifest.allow_short,
+                },
+            )
+            save_results(model_result, out_dir, seed=SEED)
+            all_runs.append(model_result)
+
         print("  running BuyHold ...")
         bh = run_backtest(ohlc, BuyHold, cost=COST, data_name=data_name,
                           strategy_name="BuyHold")
@@ -97,7 +140,7 @@ def main() -> int:
               f"sharpe={sr.metrics['sharpe']:.2f}")
 
         # Zero-cost comparison for ONE strategy per dataset (cost honesty)
-        print(f"  zero-cost comparison (SmaCrossAtr) ...")
+        print("  zero-cost comparison (SmaCrossAtr) ...")
         zc = CostModel(spread=0.0, commission=0.0, slippage=0.0)
         res_zc = run_backtest(ohlc, SmaCrossAtr, cost=zc, data_name=data_name,
                               strategy_name="SmaCrossAtr_zero_cost")

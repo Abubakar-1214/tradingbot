@@ -1,245 +1,219 @@
-"""
-Train DreamerV3 Agent on XAUUSD Trading
-
-This is the "Baby Stockfish" - Phase 1 of PROJECT GOD MODE
-"""
-
-import os
-import sys
 import argparse
+import json
+import random
+import subprocess
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
 import numpy as np
 import torch
-from tqdm import tqdm
 
-# Add parent directory to path
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
-from features.make_features import make_features
+from core.model_artifacts import ModelManifest, artifact_dir, save_manifest
+from env.dreamer_trading_env import (
+    DEFAULT_ENV_KWARGS,
+    EVAL_ENV_OVERRIDES,
+    RealisticTradingEnv,
+)
 from models.dreamer_agent import DreamerV3Agent
-from env.dreamer_trading_env import DEFAULT_ENV_KWARGS, EVAL_ENV_OVERRIDES, RealisticTradingEnv
+from models.policy import DreamerPolicy
+from train.data import prepare_data
+from train.evaluate import evaluate_policy, write_evaluation
 
 
-WINDOW = 64
-TRAIN_END_DATE = "2022-01-01"
-ENV_KWARGS = dict(DEFAULT_ENV_KWARGS, window=WINDOW)
-
-# DreamerV3 hyperparameters
-BATCH_SIZE = 16
-PREFILL_STEPS = 5_000  # Random exploration to fill buffer
-TRAIN_STEPS = 100_000  # Training steps
-TRAIN_EVERY = 4  # Train every N environment steps
-SAVE_EVERY = 10_000
-
-SAVE_DIR = "train/dreamer"
-SAVE_PREFIX = "dreamer_xauusd"
+def _arg(args, name, default):
+    return getattr(args, name, default)
 
 
-def main():
-    # Parse command line arguments
-    parser = argparse.ArgumentParser(description='Train DreamerV3 on XAUUSD')
-    parser.add_argument('--steps', type=int, default=TRAIN_STEPS,
-                        help='Number of training steps (default: 100000)')
-    parser.add_argument('--batch-size', type=int, default=BATCH_SIZE,
-                        help='Batch size (default: 16, recommended: 64 for GPU)')
-    parser.add_argument('--device', type=str, default='auto',
-                        choices=['auto', 'cuda', 'mps', 'cpu'],
-                        help='Device to use (default: auto-detect)')
-    args = parser.parse_args()
+def _git_commit():
+    try:
+        return subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+    except (OSError, subprocess.CalledProcessError):
+        return None
 
-    os.makedirs(SAVE_DIR, exist_ok=True)
 
-    # Set device
-    if args.device == 'auto':
-        # Auto-detect best available (CUDA > MPS > CPU)
-        if torch.cuda.is_available():
-            device = 'cuda'
-        elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
-            device = 'mps'
+def train(args) -> Path:
+    seed = int(_arg(args, "seed", 42))
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    device = _arg(args, "device", "cpu")
+    if device == "auto":
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    window = int(_arg(args, "window", 64))
+    train_end = _arg(args, "train_end", "2022-01-01")
+    data = prepare_data(
+        _arg(args, "data", "data/xauusd_1h.csv"),
+        train_end=train_end,
+        window=window,
+        macro_csv=_arg(args, "macro", None),
+        test_end=_arg(args, "test_end", None),
+    )
+    allow_short = bool(_arg(args, "allow_short", True))
+    action_dim = 3 if allow_short else 2
+    env_kwargs = {
+        **DEFAULT_ENV_KWARGS,
+        "window": data.window,
+        "allow_short": allow_short,
+    }
+    env = RealisticTradingEnv(
+        data.X_train,
+        data.r_train,
+        timestamps=data.ts_train,
+        **env_kwargs,
+        seed=seed,
+    )
+    obs_dim = int(env.observation_space)
+    artifact_root = Path(_arg(args, "artifact_root", "artifacts/models"))
+    out_dir = artifact_dir(artifact_root, "dreamer", _arg(args, "run_name", None))
+    contract_path = out_dir / "feature_contract.json"
+    contract_path.write_text(json.dumps(data.contract, indent=2), encoding="utf-8")
+
+    resume = _arg(args, "resume", None)
+    if resume:
+        agent = DreamerV3Agent.from_checkpoint(resume, device=device)
+        if agent.obs_dim != obs_dim or agent.action_dim != action_dim:
+            raise ValueError("resume checkpoint dimensions do not match the prepared dataset")
+    else:
+        agent = DreamerV3Agent(
+            obs_dim=obs_dim,
+            action_dim=action_dim,
+            device=device,
+            embed_dim=int(_arg(args, "embed_dim", 256)),
+            hidden_dim=int(_arg(args, "hidden_dim", 512)),
+            stoch_dim=int(_arg(args, "stoch_dim", 32)),
+            num_categories=int(_arg(args, "num_categories", 32)),
+            horizon=int(_arg(args, "horizon", 15)),
+            seq_len=int(_arg(args, "seq_len", 64)),
+        )
+
+    prefill_steps = int(_arg(args, "prefill", 5000))
+    obs = env.reset()
+    h = z = None
+    for _ in range(prefill_steps):
+        if resume:
+            action, (h, z) = agent.act(obs, h, z, deterministic=False)
         else:
-            device = 'cpu'
-    else:
-        device = args.device
+            action = np.zeros(action_dim, dtype=np.float32)
+            action[np.random.randint(action_dim)] = 1.0
+        next_obs, reward, done, _ = env.step(action)
+        agent.replay_buffer.add(obs, action, reward, done)
+        obs = env.reset() if done else next_obs
+        if done:
+            h = z = None
 
-    print(f"🚀 Using device: {device}")
-    if device == 'mps':
-        print("   ⚡ Apple Metal GPU acceleration enabled!")
-    elif device == 'cuda':
-        print("   ⚡ NVIDIA CUDA GPU acceleration enabled!")
+    steps = int(_arg(args, "steps", 100_000))
+    train_every = max(1, int(_arg(args, "train_every", 4)))
+    batch_size = int(_arg(args, "batch_size", 16))
+    save_every = max(1, int(_arg(args, "save_every", 10_000)))
+    obs = env.reset()
+    h = z = None
+    for step in range(steps):
+        action, (h, z) = agent.act(obs, h, z, deterministic=False)
+        next_obs, reward, done, _ = env.step(action)
+        agent.replay_buffer.add(obs, action, reward, done)
+        obs = env.reset() if done else next_obs
+        if done:
+            h = z = None
+        if step % train_every == 0:
+            agent.train_step(batch_size=batch_size)
+        if (step + 1) % save_every == 0:
+            agent.save(out_dir / f"checkpoint_{agent.training_step}.pt")
 
-    # Use local variables instead of modifying globals
-    batch_size = args.batch_size
-    train_steps = args.steps
-
-    print(f"📊 Training config:")
-    print(f"   Steps: {train_steps:,}")
-    print(f"   Batch size: {batch_size}")
-
-    # Load data
-    print("Loading data...")
-    # Try to use macro data first
-    if os.path.exists("data/xauusd_1h_macro.csv"):
-        print("Using MACRO data (DXY, SPX, US10Y) 🚀")
-        df, X, r = make_features("data/xauusd_1h_macro.csv", window=WINDOW)
-    else:
-        print("Using basic XAUUSD data (no macro)")
-        df, X, r = make_features("data/xauusd_1h.csv", window=WINDOW)
-
-    # Split train/test
-    train_end = np.searchsorted(df["time"].to_numpy(), np.datetime64(TRAIN_END_DATE))
-    ts = df["time"].to_numpy()
-    X_train, r_train, ts_train = X[:train_end], r[:train_end], ts[:train_end]
-    X_test, r_test, ts_test = X[train_end:], r[train_end:], ts[train_end:]
-
-    print(f"Train: {len(X_train)} bars | Test: {len(X_test)} bars")
-
-    # Create environment
-    env = RealisticTradingEnv(X_train, r_train, timestamps=ts_train, **ENV_KWARGS)
-
-    # Observation dimension
-    obs_dim = env._get_obs().shape[0]
-    print(f"Observation dimension: {obs_dim}")
-
-    # Create agent
-    print("\nInitializing DreamerV3 Agent...")
-    agent = DreamerV3Agent(
+    model_path = out_dir / "model.pt"
+    agent.save(model_path)
+    manifest = ModelManifest(
+        model_type="dreamer",
+        model_file=model_path.name,
+        contract_file=contract_path.name,
+        contract_hash=data.contract["hash"],
+        window=data.window,
+        n_features=len(data.feature_names),
         obs_dim=obs_dim,
-        action_dim=env.action_space,  # flat, long, short
-        device=device,
-        embed_dim=256,
-        hidden_dim=512,
-        stoch_dim=32,
-        num_categories=32,
-        lr_world_model=3e-4,
-        lr_actor=1e-4,
-        lr_critic=3e-4,
-        gamma=0.99,
-        lambda_=0.95,
-        horizon=15,
+        action_dim=action_dim,
+        allow_short=allow_short,
+        symbol=_arg(args, "symbol", "XAUUSD"),
+        timeframe=_arg(args, "timeframe", "H1"),
+        train_start=str(data.ts_train[0]),
+        train_end=str(train_end),
+        test_end=_arg(args, "test_end", None),
+        created_at=datetime.now(timezone.utc).isoformat(),
+        git_commit=_git_commit(),
+        hyperparams={
+            "steps": steps,
+            "prefill": prefill_steps,
+            "batch_size": batch_size,
+            "train_every": train_every,
+            "embed_dim": int(_arg(args, "embed_dim", 256)),
+            "hidden_dim": int(_arg(args, "hidden_dim", 512)),
+            "stoch_dim": int(_arg(args, "stoch_dim", 32)),
+            "num_categories": int(_arg(args, "num_categories", 32)),
+            "horizon": int(_arg(args, "horizon", 15)),
+        },
     )
-
-    print("\n" + "="*60)
-    print("PHASE 1: Prefill Replay Buffer (Random Exploration)")
-    print("="*60)
-
-    obs = env.reset()
-    h, z = None, None
-
-    for step in tqdm(range(PREFILL_STEPS), desc="Prefilling"):
-        # Random action
-        action_onehot = np.zeros(env.action_space, dtype=np.float32)
-        action_onehot[np.random.randint(0, env.action_space)] = 1.0
-
-        # Step
-        next_obs, reward, done, info = env.step(action_onehot)
-
-        # Store in replay buffer
-        agent.replay_buffer.add(obs, action_onehot, reward, done)
-
-        # Next
-        obs = next_obs
-        if done:
-            obs = env.reset()
-            h, z = None, None
-
-    print(f"✅ Replay buffer filled with {len(agent.replay_buffer)} transitions")
-
-    print("\n" + "="*60)
-    print("PHASE 2: Train DreamerV3 World Model + Policy")
-    print("="*60)
-
-    obs = env.reset()
-    h, z = None, None
-    episode_reward = 0
-    episode_count = 0
-    step_count = 0
-
-    for train_step in tqdm(range(train_steps), desc="Training"):
-        # Act in environment
-        action_onehot, (h, z) = agent.act(obs, h, z, deterministic=False)
-
-        # Step
-        next_obs, reward, done, info = env.step(action_onehot)
-
-        # Store in replay buffer
-        agent.replay_buffer.add(obs, action_onehot, reward, done)
-
-        episode_reward += reward
-        step_count += 1
-
-        # Next
-        obs = next_obs
-
-        if done:
-            print(f"\n  Episode {episode_count}: Reward={episode_reward:.4f}, Equity={info['equity']:.4f}, Steps={step_count}")
-            episode_count += 1
-            episode_reward = 0
-            step_count = 0
-            obs = env.reset()
-            h, z = None, None
-
-        # Train
-        if train_step % TRAIN_EVERY == 0:
-            losses = agent.train_step(batch_size=batch_size)
-
-            if losses and train_step % 1000 == 0:
-                print(f"\n  Step {train_step}:")
-                print(f"    World Model Loss: {losses['world_model_loss']:.4f}")
-                print(f"    - Recon: {losses['recon_loss']:.4f}")
-                print(f"    - Reward: {losses['reward_loss']:.4f}")
-                print(f"    - KL: {losses['kl_loss']:.4f}")
-                print(f"    Value Loss: {losses['value_loss']:.4f}")
-                print(f"    Policy Loss: {losses['policy_loss']:.4f}")
-
-        # Save checkpoint
-        if (train_step + 1) % SAVE_EVERY == 0:
-            ckpt_path = f"{SAVE_DIR}/{SAVE_PREFIX}_{(train_step+1)//1000}k.pt"
-            agent.save(ckpt_path)
-            print(f"\n✅ Saved checkpoint: {ckpt_path}")
-
-    # Final save
-    final_path = f"{SAVE_DIR}/{SAVE_PREFIX}_final.pt"
-    agent.save(final_path)
-    print(f"\n✅ Saved final model: {final_path}")
-
-    print("\n" + "="*60)
-    print("PHASE 3: Evaluation on Test Set")
-    print("="*60)
-
-    test_env = RealisticTradingEnv(
-        X_test, r_test, timestamps=ts_test,
-        **{**ENV_KWARGS, **EVAL_ENV_OVERRIDES},
+    save_manifest(manifest, out_dir)
+    if len(data.X_test) <= data.window + 2:
+        raise ValueError("test period must contain more than window+2 feature rows")
+    policy = DreamerPolicy(agent)
+    eval_metrics = evaluate_policy(
+        policy,
+        data.X_test,
+        data.r_test,
+        data.ts_test,
+        {**env_kwargs, **EVAL_ENV_OVERRIDES},
     )
-    obs = test_env.reset()
-    h, z = None, None
+    write_evaluation(
+        out_dir,
+        eval_metrics,
+        data.ts_test[0],
+        data.ts_test[-1],
+        data.contract["hash"],
+    )
+    return out_dir
 
-    equities = []
-    positions = []
 
-    while True:
-        action_onehot, (h, z) = agent.act(obs, h, z, deterministic=True)
-        obs, reward, done, info = test_env.step(action_onehot)
-
-        equities.append(info["equity"])
-        positions.append(info["position"])
-
-        if done:
-            break
-
-    st = test_env.episode_stats()
-    positions = np.array(positions)
-    final_equity = float(equities[-1])
-
-    print(f"\n📊 Test Results (after spread/commission/slippage/swap):")
-    print(f"   Final Equity: {final_equity:.4f}")
-    print(f"   Return: {st['return_pct']:.2f}%")
-    print(f"   Max Drawdown: {st['max_drawdown_pct']:.2f}%")
-    print(f"   Trades: {st['trades']} | Win rate: {st['win_rate']:.1%} | SL hits: {st['sl_hits']}")
-    print(f"   Costs paid: {st['costs_paid']:.4f} | Swap paid: {st['swap_paid']:.4f}")
-    print(f"   % Time Long: {np.mean(positions == 1) * 100:.1f}% | Short: {np.mean(positions == -1) * 100:.1f}%")
-
-    print("\n🎉 Training Complete! The World Model has learned the Physics of the Market.")
-    print("   Next: Implement MCTS to achieve true 'Stockfish' lookahead capability.")
+def main(argv=None):
+    parser = argparse.ArgumentParser(description="Train Dreamer on the shared trading environment")
+    parser.add_argument("--data", default="data/xauusd_1h.csv")
+    parser.add_argument("--macro")
+    parser.add_argument("--train-end", dest="train_end", default="2022-01-01")
+    parser.add_argument("--test-end", dest="test_end")
+    parser.add_argument("--run-name")
+    parser.add_argument("--artifact-root", default="artifacts/models")
+    parser.add_argument("--resume")
+    parser.add_argument("--steps", type=int, default=100_000)
+    parser.add_argument("--prefill", type=int, default=5_000)
+    parser.add_argument("--save-every", type=int, default=10_000)
+    parser.add_argument("--train-every", type=int, default=4)
+    parser.add_argument("--batch-size", type=int, default=16)
+    parser.add_argument("--seq-len", type=int, default=64)
+    parser.add_argument("--window", type=int, default=64)
+    parser.add_argument("--embed-dim", type=int, default=256)
+    parser.add_argument("--hidden-dim", type=int, default=512)
+    parser.add_argument("--stoch-dim", type=int, default=32)
+    parser.add_argument("--num-categories", type=int, default=32)
+    parser.add_argument("--horizon", type=int, default=15)
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--device", choices=["auto", "cpu", "cuda", "mps"], default="auto")
+    actions = parser.add_mutually_exclusive_group()
+    actions.add_argument("--allow-short", dest="allow_short", action="store_true")
+    actions.add_argument("--long-only", dest="allow_short", action="store_false")
+    parser.set_defaults(allow_short=True)
+    args = parser.parse_args(argv)
+    print(train(args))
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

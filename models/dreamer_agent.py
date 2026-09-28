@@ -9,15 +9,24 @@ Based on: https://arxiv.org/abs/2301.04104
 """
 
 import copy
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-from torch.optim import Adam  # Use Adam instead of AdamW to avoid transformers import issue
+from pathlib import Path
+
 import numpy as np
+import torch
+import torch.nn.functional as F
+from torch.optim import (
+    Adam,  # Use Adam instead of AdamW to avoid transformers import issue
+)
 
 from models.dreamer_components import (
-    Encoder, RSSM, Decoder, RewardPredictor, Actor, Critic,
-    symlog, symexp
+    RSSM,
+    Actor,
+    Critic,
+    Decoder,
+    Encoder,
+    RewardPredictor,
+    symexp,
+    symlog,
 )
 
 
@@ -142,6 +151,7 @@ class DreamerV3Agent:
         slow_critic_tau=0.02,
         max_imag_starts=8192,  # cap on imagination rollouts per train step
         use_amp=None,  # bf16 autocast; defaults to True on CUDA
+        seq_len=64,
     ):
         self.device = device
         self.obs_dim = obs_dim
@@ -172,7 +182,7 @@ class DreamerV3Agent:
         self.optimizer_critic = Adam(self.critic.parameters(), lr=lr_critic)
 
         # Replay buffer
-        self.replay_buffer = ReplayBuffer(capacity=100_000, seq_len=64)
+        self.replay_buffer = ReplayBuffer(capacity=100_000, seq_len=seq_len)
 
         # Hyperparameters
         self.free_nats = free_nats
@@ -232,6 +242,58 @@ class DreamerV3Agent:
 
             return action.cpu().numpy()[0], (h, z)
 
+    def policy_probs(self, state):
+        return torch.softmax(self.actor(state), dim=-1)
+
+    def compute_world_model_loss(self, batch, params_override=None):
+        if params_override is not None:
+            raise NotImplementedError("parameter overrides are not implemented")
+        obs = torch.as_tensor(batch["obs"], device=self.device)
+        action = torch.as_tensor(batch["action"], device=self.device)
+        reward = torch.as_tensor(batch["reward"], device=self.device)
+        done = torch.as_tensor(batch["done"], device=self.device)
+        B, T = obs.shape[0], obs.shape[1]
+        with self._autocast():
+            embed = self.encoder(obs.reshape(B * T, -1)).reshape(B, T, -1)
+            h, z = self.rssm.initial_state(B, self.device)
+            states = []
+            kl_losses = []
+            for t in range(T):
+                if t > 0:
+                    keep = (1.0 - done[:, t - 1]).unsqueeze(-1)
+                    h = h * keep
+                    z = z * keep
+                h, z, prior_logits, posterior_logits = self.rssm.observe(
+                    embed[:, t], action[:, t], h, z
+                )
+                states.append(self.rssm.get_state(h, z))
+                kl_losses.append(
+                    self.rssm.kl_loss(
+                        prior_logits,
+                        posterior_logits,
+                        self.free_nats,
+                        self.kl_dyn_scale,
+                        self.kl_rep_scale,
+                    )
+                )
+            states_seq = torch.stack(states, dim=1)
+            flat_states = states_seq.reshape(B * T, -1)
+            obs_pred = self.decoder(flat_states).float()
+            recon_loss = (
+                (obs_pred - symlog(obs.reshape(B * T, -1))) ** 2
+            ).sum(-1).mean()
+            reward_pred = self.reward_predictor(flat_states).float()
+            reward_loss = F.mse_loss(reward_pred, symlog(reward.reshape(B * T)))
+            kl_loss = torch.stack(kl_losses).mean()
+            loss = recon_loss + reward_loss + kl_loss
+        return loss, {
+            "world_model_loss": loss,
+            "recon_loss": recon_loss,
+            "reward_loss": reward_loss,
+            "kl_loss": kl_loss,
+            "states": states_seq,
+        }
+
     def train_step(self, batch_size=16):
         """
         Single training step
@@ -245,59 +307,12 @@ class DreamerV3Agent:
         if batch is None:
             return None
 
-        obs = torch.as_tensor(batch['obs'], device=self.device)  # (B, T, obs_dim)
-        action = torch.as_tensor(batch['action'], device=self.device)  # (B, T, action_dim)
-        reward = torch.as_tensor(batch['reward'], device=self.device)  # (B, T)
-        done = torch.as_tensor(batch['done'], device=self.device)  # (B, T)
-
-        B, T = obs.shape[0], obs.shape[1]
-
         # ==================== PHASE 1: Train World Model ====================
         self.optimizer_world_model.zero_grad(set_to_none=True)
-
-        with self._autocast():
-            # Encode observations
-            embed = self.encoder(obs.reshape(B * T, -1)).reshape(B, T, -1)
-
-            # Initialize state
-            h, z = self.rssm.initial_state(B, self.device)
-
-            states = []
-            kl_losses = []
-
-            # Unroll sequence
-            for t in range(T):
-                if t > 0:
-                    # Reset latent state at episode boundaries
-                    keep = (1.0 - done[:, t - 1]).unsqueeze(-1)
-                    h = h * keep
-                    z = z * keep
-
-                # Posterior inference
-                h, z, prior_logits, posterior_logits = self.rssm.observe(
-                    embed[:, t], action[:, t], h, z
-                )
-                states.append(self.rssm.get_state(h, z))
-                kl_losses.append(
-                    self.rssm.kl_loss(prior_logits, posterior_logits,
-                                      self.free_nats, self.kl_dyn_scale, self.kl_rep_scale)
-                )
-
-            states_seq = torch.stack(states, dim=1)  # (B, T, state_dim)
-            flat_states = states_seq.reshape(B * T, -1)
-
-            # Reconstruction loss in symlog space (sum over obs dims, mean over batch/time)
-            obs_pred = self.decoder(flat_states).float()
-            recon_loss_total = ((obs_pred - symlog(obs.reshape(B * T, -1))) ** 2).sum(-1).mean()
-
-            # Reward prediction loss (symlog space)
-            reward_pred = self.reward_predictor(flat_states).float()
-            reward_loss_total = F.mse_loss(reward_pred, symlog(reward.reshape(B * T)))
-
-            kl_loss_total = torch.stack(kl_losses).mean()
-
-            world_model_loss = recon_loss_total + reward_loss_total + kl_loss_total
-
+        world_model_loss, world_model_metrics = self.compute_world_model_loss(batch)
+        obs = torch.as_tensor(batch["obs"], device=self.device)
+        B, T = obs.shape[0], obs.shape[1]
+        states_seq = world_model_metrics["states"]
         world_model_loss.backward()
         torch.nn.utils.clip_grad_norm_(self.world_model_params, max_norm=1000.0)
         self.optimizer_world_model.step()
@@ -352,9 +367,9 @@ class DreamerV3Agent:
 
         return {
             'world_model_loss': world_model_loss.item(),
-            'recon_loss': recon_loss_total.item(),
-            'reward_loss': reward_loss_total.item(),
-            'kl_loss': kl_loss_total.item(),
+            'recon_loss': world_model_metrics["recon_loss"].item(),
+            'reward_loss': world_model_metrics["reward_loss"].item(),
+            'kl_loss': world_model_metrics["kl_loss"].item(),
             'value_loss': value_loss.item(),
             'policy_loss': policy_loss.item(),
             'entropy': entropy.mean().item(),
@@ -434,7 +449,27 @@ class DreamerV3Agent:
         _normalize_returns), torch + numpy RNG states and the training step so
         a resumed run continues deterministically from the checkpoint.
         """
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
         torch.save({
+            'config': {
+                'obs_dim': self.obs_dim,
+                'action_dim': self.action_dim,
+                'embed_dim': self.encoder.net[-1].scale.numel(),
+                'hidden_dim': self.rssm.hidden_dim,
+                'stoch_dim': self.rssm.stoch_dim,
+                'num_categories': self.rssm.num_categories,
+                'horizon': self.horizon,
+                'gamma': self.gamma,
+                'lambda_': self.lambda_,
+                'seq_len': self.replay_buffer.seq_len,
+                'free_nats': self.free_nats,
+                'kl_dyn_scale': self.kl_dyn_scale,
+                'kl_rep_scale': self.kl_rep_scale,
+                'entropy_coef': self.entropy_coef,
+                'slow_critic_tau': self.slow_critic_tau,
+                'max_imag_starts': self.max_imag_starts,
+            },
             'encoder': self.encoder.state_dict(),
             'rssm': self.rssm.state_dict(),
             'decoder': self.decoder.state_dict(),
@@ -451,6 +486,16 @@ class DreamerV3Agent:
             'rng_torch': torch.get_rng_state(),
             'rng_numpy': np.random.get_state(),
         }, path)
+
+    @classmethod
+    def from_checkpoint(cls, path, device="cpu"):
+        checkpoint = torch.load(path, map_location=device, weights_only=False)
+        config = checkpoint.get("config")
+        if not config:
+            raise ValueError(f"checkpoint at {path} has no agent config")
+        agent = cls(device=device, **config)
+        agent.load(path)
+        return agent
 
     def load(self, path):
         """Load agent — restores the FULL training state (P1 audit fix).
@@ -512,7 +557,7 @@ if __name__ == "__main__":
     # Train step
     losses = agent.train_step(batch_size=4)
     if losses:
-        print(f"✅ Training step completed")
+        print("✅ Training step completed")
         print(f"   World Model Loss: {losses['world_model_loss']:.4f}")
         print(f"   Value Loss: {losses['value_loss']:.4f}")
         print(f"   Policy Loss: {losses['policy_loss']:.4f}")
