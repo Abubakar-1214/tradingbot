@@ -43,6 +43,7 @@ def evaluate_policy(
         raise ValueError("test period is empty")
     kwargs = {**DEFAULT_ENV_KWARGS, **EVAL_ENV_OVERRIDES, **(env_kwargs or {})}
     kwargs.setdefault("window", 64)
+    window = int(kwargs["window"])
     if env_kwargs is None or "allow_short" not in env_kwargs:
         kwargs["allow_short"] = policy.action_dim == 3
     env = RealisticTradingEnv(X_test, r_test, timestamps=ts_test, **kwargs)
@@ -73,6 +74,9 @@ def evaluate_policy(
     total_return_pct = (float(equity[-1]) - 1.0) * 100.0
     years = len(log_returns) / bars_per_year if bars_per_year else 0.0
     cagr = (float(equity[-1]) ** (1.0 / years) - 1.0) * 100.0 if years > 0 else 0.0
+    buy_hold_returns = np.asarray(
+        r_test[window:window + len(log_returns)], dtype=np.float64
+    )
     return {
         "total_return_pct": total_return_pct,
         "cagr_pct": float(cagr),
@@ -82,7 +86,7 @@ def evaluate_policy(
         "win_rate": stats["win_rate"],
         "exposure_pct": float(np.mean(np.asarray(positions) != 0) * 100.0) if positions else 0.0,
         "costs": stats["costs_paid"],
-        "buy_hold_return_pct": float(np.expm1(np.asarray(r_test, dtype=np.float64).sum()) * 100.0),
+        "buy_hold_return_pct": float(np.expm1(buy_hold_returns.sum()) * 100.0),
         "final_equity": float(equity[-1]),
         "bars": len(log_returns),
         "bars_per_year": bars_per_year,

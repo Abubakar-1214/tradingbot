@@ -1,555 +1,333 @@
-"""
-Self-Play Adversarial Training
-
-How AlphaGo became superhuman: Play against yourself millions of times.
-
-We create TWO agents:
-1. TRADER - Tries to make money
-2. MARKET MAKER - Tries to take Trader's money
-
-They battle each other. Trader learns to avoid every trap because it's been
-trapped a million times.
-
-Market Maker can:
-- Widen spreads before Trader enters
-- Create fake breakouts
-- Hunt stop losses
-- Cause slippage
-- Create liquidity traps
-
-After millions of battles, Trader becomes immune to all manipulation.
-
-This is the path to superhuman performance.
-"""
-
-import torch
-import torch.nn as nn
-import numpy as np
-import logging
 from collections import deque
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+import numpy as np
+import torch
+from torch import nn
+from torch.distributions import Categorical
 
 
 class MarketMakerAgent:
-    """
-    Adversarial agent that learns to trick the Trader
-
-    Goal: Maximize profit by exploiting Trader's weaknesses
-
-    Strategies:
-    - Detect Trader patterns (momentum follower, mean reversion, etc.)
-    - Create fake breakouts if Trader chases momentum
-    - Hunt stop losses if Trader is predictable
-    - Widen spreads when Trader wants to enter
-    """
-
-    def __init__(self, state_dim, action_dim=4, hidden_dim=128):
-        """
-        Initialize Market Maker
-
-        Args:
-            state_dim: Market state dimension
-            action_dim: Number of manipulation actions
-                        0 = Do nothing
-                        1 = Widen spread
-                        2 = Fake breakout
-                        3 = Stop hunt
-        """
-
-        self.state_dim = state_dim
-        self.action_dim = action_dim
-
-        # Policy network
+    def __init__(
+        self,
+        state_dim,
+        action_dim=4,
+        hidden_dim=128,
+        learning_rate=3e-4,
+        gamma=0.99,
+        baseline_momentum=0.9,
+        manip_cost=0.01,
+        max_manipulation_rate=0.2,
+    ):
+        if action_dim != 4:
+            raise ValueError("MarketMakerAgent requires exactly four actions")
+        if not 0.0 <= max_manipulation_rate <= 1.0:
+            raise ValueError("max_manipulation_rate must be between 0 and 1")
+        self.state_dim = int(state_dim)
+        self.action_dim = int(action_dim)
+        self.gamma = float(gamma)
+        self.baseline_momentum = float(baseline_momentum)
+        self.manip_cost = float(manip_cost)
+        self.max_manipulation_rate = float(max_manipulation_rate)
         self.policy = nn.Sequential(
-            nn.Linear(state_dim + 10, hidden_dim),  # +10 for trader pattern features
+            nn.Linear(self.state_dim + 10, hidden_dim),
             nn.ReLU(),
             nn.Linear(hidden_dim, hidden_dim),
             nn.ReLU(),
-            nn.Linear(hidden_dim, action_dim)
+            nn.Linear(hidden_dim, self.action_dim),
         )
-
-        # Optimizer
-        self.optimizer = torch.optim.Adam(self.policy.parameters(), lr=3e-4)
-
-        # Memory for trader pattern detection
+        self.optimizer = torch.optim.Adam(self.policy.parameters(), lr=learning_rate)
         self.trader_history = deque(maxlen=100)
-
-        # Statistics
+        self.baseline = 0.0
         self.total_profit = 0.0
         self.successful_traps = 0
+        self.begin_episode()
 
-        logger.info("🎭 Market Maker initialized")
-        logger.info(f"   Actions: {action_dim} manipulation strategies")
+    def begin_episode(self):
+        self.total_decisions = 0
+        self.manipulation_count = 0
+        self._episode_log_probs = []
+        self._episode_rewards = []
+
+    @property
+    def manipulation_rate(self):
+        return self.manipulation_count / max(self.total_decisions, 1)
+
+    @staticmethod
+    def _action_index(action):
+        if hasattr(action, "action"):
+            return int(action.action)
+        values = np.asarray(action)
+        return int(values.item()) if values.ndim == 0 else int(np.argmax(values))
+
+    def _pattern_features(self):
+        recent = np.asarray(list(self.trader_history)[-20:], dtype=np.float32)
+        if len(recent) == 0:
+            return np.zeros(10, dtype=np.float32)
+        changes = np.count_nonzero(recent[1:] != recent[:-1]) if len(recent) > 1 else 0
+        direction = recent - 1.0
+        repeats = {}
+        for index in range(max(0, len(recent) - 3)):
+            pattern = tuple(recent[index:index + 3])
+            repeats[pattern] = repeats.get(pattern, 0) + 1
+        predictability = (
+            max(repeats.values()) / max(len(recent) - 2, 1) if repeats else 0.0
+        )
+        return np.asarray(
+            [
+                float(np.mean(recent == 1)),
+                float(np.mean(recent == 2)),
+                float(np.mean(direction)),
+                float(changes / max(len(recent) - 1, 1)),
+                float(predictability),
+                float(np.mean(direction[-5:]) - np.mean(direction[:5])),
+                float(np.std(direction)),
+                float(np.mean(recent == 0)),
+                float(direction[-1]),
+                float(len(set(recent[-5:])) == 1),
+            ],
+            dtype=np.float32,
+        )
+
+    def select_action(self, trader_action, market_state):
+        trader_action = self._action_index(trader_action)
+        self.trader_history.append(trader_action)
+        market_state = np.asarray(market_state, dtype=np.float32).reshape(-1)
+        if market_state.size != self.state_dim:
+            raise ValueError(
+                f"expected market state width {self.state_dim}, got {market_state.size}"
+            )
+        observation = np.concatenate((market_state, self._pattern_features()))
+        state_tensor = torch.as_tensor(observation, dtype=torch.float32).unsqueeze(0)
+        probabilities = torch.softmax(self.policy(state_tensor), dim=-1).squeeze(0)
+        next_decision = self.total_decisions + 1
+        allowed_count = int(
+            np.floor(self.max_manipulation_rate * next_decision + 1e-12)
+        )
+        if self.manipulation_count >= allowed_count:
+            probabilities = torch.cat(
+                (probabilities[:1], torch.zeros_like(probabilities[1:]))
+            )
+            probabilities = probabilities / probabilities.sum()
+        distribution = Categorical(probs=probabilities)
+        action = distribution.sample()
+        log_probability = distribution.log_prob(action)
+        action_index = int(action.item())
+        self.total_decisions += 1
+        if action_index:
+            self.manipulation_count += 1
+        return action_index, log_probability
 
     def respond(self, trader_action, market_state, trader_pattern=None):
-        """
-        Decide how to manipulate market based on Trader's action
+        action, log_probability = self.select_action(trader_action, market_state)
+        self._pending_log_probability = log_probability
+        return action
 
-        Args:
-            trader_action: What Trader wants to do (0=flat, 1=long)
-            market_state: Current market state
-            trader_pattern: Detected pattern (optional)
-
-        Returns:
-            mm_action: Market Maker's manipulation action
-        """
-
-        # Store trader action
-        self.trader_history.append(trader_action)
-
-        # Detect trader pattern if not provided
-        if trader_pattern is None:
-            trader_pattern = self._detect_trader_pattern()
-
-        # Prepare input
-        state_tensor = torch.FloatTensor(market_state).unsqueeze(0)
-        pattern_tensor = torch.FloatTensor(trader_pattern).unsqueeze(0)
-        input_tensor = torch.cat([state_tensor, pattern_tensor], dim=-1)
-
-        # Get action
-        with torch.no_grad():
-            action_logits = self.policy(input_tensor)
-            action_probs = torch.softmax(action_logits, dim=-1)
-            mm_action = torch.argmax(action_probs).item()
-
-        return mm_action
-
-    def _detect_trader_pattern(self):
-        """
-        Analyze Trader's recent actions to detect strategy
-
-        Patterns:
-        - Momentum follower (buys breakouts)
-        - Mean reversion (buys dips)
-        - Trend follower (stays in direction)
-        - Random (no pattern)
-
-        Returns:
-            pattern_features: 10-dim vector describing pattern
-        """
-
-        if len(self.trader_history) < 10:
-            # Not enough data
-            return np.zeros(10)
-
-        recent = list(self.trader_history)[-20:]
-
-        # Pattern 1: Momentum following
-        # Does trader buy after price increases?
-        momentum_score = 0.0
-
-        # Pattern 2: Mean reversion
-        # Does trader buy after price decreases?
-        reversion_score = 0.0
-
-        # Pattern 3: Trend following
-        # Does trader stay in same direction?
-        trend_score = np.mean(recent) if recent else 0.0
-
-        # Pattern 4: Overtrading
-        # How often does trader change position?
-        changes = sum(1 for i in range(len(recent)-1) if recent[i] != recent[i+1])
-        overtrade_score = changes / len(recent) if recent else 0.0
-
-        # Pattern 5: Predictability
-        # Is there a clear pattern?
-        predictability = self._compute_predictability(recent)
-
-        features = np.array([
-            momentum_score,
-            reversion_score,
-            trend_score,
-            overtrade_score,
-            predictability,
-            np.mean(recent) if recent else 0.0,  # Avg position
-            np.std(recent) if len(recent) > 1 else 0.0,  # Position volatility
-            len([x for x in recent if x == 1]) / len(recent) if recent else 0.0,  # % long
-            1.0 if recent and recent[-1] == 1 else 0.0,  # Currently long
-            1.0 if len(set(recent[-5:])) == 1 else 0.0,  # Consistent last 5
-        ])
-
-        return features
-
-    def _compute_predictability(self, actions):
-        """Measure how predictable trader is"""
-
-        if len(actions) < 5:
-            return 0.0
-
-        # Check for repeating patterns
-        pattern_length = 3
-        patterns = {}
-
-        for i in range(len(actions) - pattern_length):
-            pattern = tuple(actions[i:i+pattern_length])
-            patterns[pattern] = patterns.get(pattern, 0) + 1
-
-        # If same pattern repeats often = high predictability
-        if patterns:
-            max_repeats = max(patterns.values())
-            return max_repeats / (len(actions) - pattern_length + 1)
-
-        return 0.0
-
-    def learn(self, reward):
-        """
-        Learn from success/failure
-
-        Args:
-            reward: Profit from this manipulation
-                   Positive = successfully tricked trader
-                   Negative = trader avoided trap
-        """
-
-        self.total_profit += reward
-
+    def observe_reward(self, log_probability, reward):
+        self._episode_log_probs.append(log_probability)
+        self._episode_rewards.append(float(reward))
+        self.total_profit += float(reward)
         if reward > 0:
             self.successful_traps += 1
 
-        # Training would happen here
-        # For now, just track statistics
+    def finish_episode(self):
+        if not self._episode_rewards:
+            return 0.0
+        returns = []
+        running = 0.0
+        for reward in reversed(self._episode_rewards):
+            running = reward + self.gamma * running
+            returns.append(running)
+        returns = torch.as_tensor(list(reversed(returns)), dtype=torch.float32)
+        baseline = self.baseline
+        advantages = returns - baseline
+        loss = -(
+            torch.stack(self._episode_log_probs) * advantages.detach()
+        ).mean()
+        self.optimizer.zero_grad(set_to_none=True)
+        loss.backward()
+        nn.utils.clip_grad_norm_(self.policy.parameters(), 1.0)
+        self.optimizer.step()
+        self.baseline = (
+            self.baseline_momentum * baseline
+            + (1.0 - self.baseline_momentum) * float(returns.mean())
+        )
+        mean_reward = float(np.mean(self._episode_rewards))
+        self._episode_log_probs = []
+        self._episode_rewards = []
+        return mean_reward
+
+    def learn(self, reward):
+        self.total_profit += float(reward)
+        if reward > 0:
+            self.successful_traps += 1
 
     def get_statistics(self):
-        """Get MM statistics"""
         return {
-            'total_profit': self.total_profit,
-            'successful_traps': self.successful_traps,
-            'avg_profit_per_trap': self.total_profit / max(1, self.successful_traps),
+            "total_profit": self.total_profit,
+            "successful_traps": self.successful_traps,
+            "avg_profit_per_trap": self.total_profit / max(1, self.successful_traps),
+            "manipulation_rate": self.manipulation_rate,
         }
 
 
 class AdversarialTradingEnv:
-    """
-    Environment where Market Maker fights against Trader
-
-    Normal environment: Trader vs Static Market
-    Adversarial environment: Trader vs Intelligent Market Maker
-
-    MM can manipulate:
-    - Spreads
-    - Create fake price moves
-    - Hunt stops
-    - Cause slippage
-    """
-
     def __init__(self, base_env, market_maker):
-        """
-        Args:
-            base_env: Base trading environment
-            market_maker: MarketMakerAgent instance
-        """
-
         self.base_env = base_env
         self.market_maker = market_maker
-
-        # Manipulation state
-        self.current_manipulation = None
-
-        logger.info("⚔️ Adversarial Trading Environment initialized")
-
-    def step(self, trader_action):
-        """
-        Trader takes action → MM responds → Execute
-
-        Args:
-            trader_action: Trader's desired action
-
-        Returns:
-            obs: Next observation
-            reward: Trader's reward (after MM manipulation)
-            done: Episode done
-            info: Additional info
-        """
-
-        # Get current state
-        state = self._get_market_state()
-
-        # MM observes trader's action and responds
-        mm_action = self.market_maker.respond(trader_action, state)
-
-        # Apply MM's manipulation
-        manipulated_env = self._apply_manipulation(mm_action)
-
-        # Execute trader's action in manipulated environment
-        obs, base_reward, done, info = manipulated_env.step(trader_action)
-
-        # MM gets negative of trader's reward (zero-sum game)
-        mm_reward = -base_reward
-
-        # MM learns
-        self.market_maker.learn(mm_reward)
-
-        # Add manipulation info
-        info['mm_action'] = mm_action
-        info['mm_profit'] = mm_reward
-        info['manipulation_type'] = self._get_manipulation_name(mm_action)
-
-        return obs, base_reward, done, info
+        self.current_manipulation = 0
+        self.action_names = ("none", "widen_spread", "slippage", "stop_hunt")
 
     def _get_market_state(self):
-        """Get current market state as numpy array"""
+        return self.base_env._get_obs().copy()
 
-        # Extract state from base environment
-        # This is environment-specific
-        # For now, return dummy state
-        return np.random.randn(100)
+    @staticmethod
+    def _action_index(action):
+        if hasattr(action, "action"):
+            return int(action.action)
+        values = np.asarray(action)
+        return int(values.item()) if values.ndim == 0 else int(np.argmax(values))
 
-    def _apply_manipulation(self, mm_action):
-        """
-        Apply Market Maker's manipulation
+    def _action_one_hot(self, action):
+        action = np.asarray(action)
+        if action.ndim == 0:
+            one_hot = np.zeros(self.base_env.action_space, dtype=np.float32)
+            one_hot[int(action)] = 1.0
+            return one_hot
+        if action.size != self.base_env.action_space:
+            raise ValueError("trader action vector does not match environment action space")
+        return action.astype(np.float32, copy=False).reshape(-1)
 
-        mm_action types:
-        0: Do nothing
-        1: Widen spread
-        2: Fake breakout
-        3: Stop hunt
-        """
-
-        if mm_action == 0:
-            # No manipulation
-            pass
-
-        elif mm_action == 1:
-            # Widen spread
-            if hasattr(self.base_env, 'spread'):
-                self.base_env.spread *= 2.0  # Double the spread
-                logger.debug("🎭 MM: Widened spread")
-
-        elif mm_action == 2:
-            # Fake breakout
-            # Temporarily move price, then reverse
-            if hasattr(self.base_env, 'inject_price_move'):
-                self.base_env.inject_price_move(
-                    direction=np.random.choice([-1, 1]),
-                    magnitude=0.001,  # 0.1% move
-                    duration=3  # 3 candles
-                )
-                logger.debug("🎭 MM: Created fake breakout")
-
-        elif mm_action == 3:
-            # Stop hunt
-            # Push price toward common stop levels
-            if hasattr(self.base_env, 'push_price_to_stops'):
-                self.base_env.push_price_to_stops()
-                logger.debug("🎭 MM: Hunting stop losses")
-
-        self.current_manipulation = mm_action
-
-        return self.base_env
-
-    def _get_manipulation_name(self, action):
-        """Get human-readable manipulation name"""
-        names = {
-            0: "None",
-            1: "Widen Spread",
-            2: "Fake Breakout",
-            3: "Stop Hunt",
+    def step(self, trader_action):
+        state = self._get_market_state()
+        trader_action_index = self._action_index(trader_action)
+        mm_action, log_probability = self.market_maker.select_action(
+            trader_action_index, state
+        )
+        stop_loss = self.base_env.stop_loss or 0.0
+        perturbation = {
+            "spread_mult": 3.0 if mm_action == 1 else 1.0,
+            "slippage_mult": 3.0 if mm_action == 2 else 1.0,
+            "adverse_gap": 0.5 * stop_loss if mm_action == 3 else 0.0,
         }
-        return names.get(action, "Unknown")
+        self.base_env.set_perturbation(**perturbation)
+        obs, trader_reward, done, info = self.base_env.step(
+            self._action_one_hot(trader_action)
+        )
+        budget_cost = self.market_maker.manip_cost if mm_action else 0.0
+        mm_reward = -float(trader_reward) - budget_cost
+        self.market_maker.observe_reward(log_probability, mm_reward)
+        self.current_manipulation = mm_action
+        info.update(
+            mm_action=mm_action,
+            mm_profit=mm_reward,
+            budget_cost=budget_cost,
+            manipulation_type=self.action_names[mm_action],
+        )
+        return obs, trader_reward, done, info
 
     def reset(self):
-        """Reset environment"""
-        self.current_manipulation = None
+        self.current_manipulation = 0
+        self.market_maker.begin_episode()
         return self.base_env.reset()
 
 
 class SelfPlayTrainer:
-    """
-    Self-play training loop
-
-    Alternates between:
-    1. Training Trader against current MM
-    2. Training MM against current Trader
-
-    Over time, both improve:
-    - Trader learns to avoid all MM traps
-    - MM learns new tricks
-    - Arms race continues
-    """
-
-    def __init__(self, trader_agent, mm_agent, env):
-        """
-        Args:
-            trader_agent: Trading agent
-            mm_agent: Market Maker agent
-            env: Base environment
-        """
-
+    def __init__(
+        self,
+        trader_agent,
+        mm_agent,
+        env,
+        train_every=4,
+        batch_size=16,
+    ):
         self.trader = trader_agent
         self.mm = mm_agent
         self.env = env
-
-        # Create adversarial environment
         self.adv_env = AdversarialTradingEnv(env, mm_agent)
-
-        # Training history
+        self.train_every = max(1, int(train_every))
+        self.batch_size = int(batch_size)
         self.history = {
-            'trader_wins': [],
-            'mm_profits': [],
-            'epochs': 0,
+            "trader_wins": [],
+            "mm_profits": [],
+            "epochs": 0,
+            "trader_updates": 0,
         }
+        self._h = None
+        self._z = None
+        self._steps_since_update = 0
 
-        logger.info("🥊 Self-Play Trainer initialized")
+    def _reset_trader_state(self):
+        self._h = None
+        self._z = None
+        if hasattr(self.trader, "prev_action"):
+            self.trader.prev_action = None
 
-    def train(self, num_epochs=100, steps_per_epoch=1000):
-        """
-        Run self-play training
-
-        Args:
-            num_epochs: Number of epochs
-            steps_per_epoch: Steps per epoch
-        """
-
-        logger.info("🥊 Starting self-play training")
-        logger.info(f"   Epochs: {num_epochs}")
-        logger.info(f"   Steps/epoch: {steps_per_epoch}")
-
-        for epoch in range(num_epochs):
-            logger.info(f"\n{'='*60}")
-            logger.info(f"Epoch {epoch+1}/{num_epochs}")
-            logger.info(f"{'='*60}")
-
-            # Phase 1: Train Trader against current MM
-            logger.info("Phase 1: Training Trader")
-            trader_reward = self._train_trader(steps_per_epoch)
-
-            # Phase 2: Train MM against current Trader
-            logger.info("Phase 2: Training Market Maker")
-            mm_profit = self._train_mm(steps_per_epoch)
-
-            # Log results
-            self.history['trader_wins'].append(trader_reward)
-            self.history['mm_profits'].append(mm_profit)
-            self.history['epochs'] += 1
-
-            logger.info(f"\nEpoch {epoch+1} Results:")
-            logger.info(f"  Trader avg reward: {trader_reward:.4f}")
-            logger.info(f"  MM avg profit: {mm_profit:.4f}")
-
-            # Check balance
-            if abs(trader_reward + mm_profit) < 0.01:
-                logger.info("  ⚖️ Zero-sum game balanced")
-            else:
-                logger.warning(f"  ⚠️ Imbalance: {trader_reward + mm_profit:.4f}")
-
-        logger.info("\n🎉 Self-play training complete!")
-        self._print_final_stats()
+    def _trader_action(self, obs, deterministic=False):
+        result = self.trader.act(
+            obs,
+            self._h,
+            self._z,
+            deterministic=deterministic,
+        )
+        action, state = result
+        if isinstance(state, tuple) and len(state) == 2:
+            self._h, self._z = state
+        return np.asarray(action, dtype=np.float32).reshape(-1)
 
     def _train_trader(self, steps):
-        """Train trader for N steps"""
-
-        total_reward = 0.0
-
         obs = self.adv_env.reset()
-
-        for step in range(steps):
-            # Trader acts
-            action = self.trader.act(obs)
-
-            # Step in adversarial environment
-            obs, reward, done, info = self.adv_env.step(action)
-
+        self._reset_trader_state()
+        total_reward = 0.0
+        episode_open = True
+        for step in range(int(steps)):
+            action = self._trader_action(obs)
+            next_obs, reward, done, _ = self.adv_env.step(action)
+            self.trader.replay_buffer.add(obs, action, reward, done)
             total_reward += reward
-
-            # Trader learns (placeholder)
-            # self.trader.learn(obs, action, reward)
-
+            self._steps_since_update += 1
+            if self._steps_since_update >= self.train_every:
+                self._steps_since_update = 0
+                if len(self.trader.replay_buffer) >= self.trader.replay_buffer.seq_len + 1:
+                    metrics = self.trader.train_step(batch_size=self.batch_size)
+                    if metrics is not None:
+                        self.history["trader_updates"] += 1
+            obs = next_obs
             if done:
-                obs = self.adv_env.reset()
-
-        return total_reward / steps
+                self.mm.finish_episode()
+                episode_open = False
+                self._reset_trader_state()
+                if step + 1 < steps:
+                    obs = self.adv_env.reset()
+                    episode_open = True
+        if episode_open:
+            self.mm.finish_episode()
+        return total_reward / max(int(steps), 1)
 
     def _train_mm(self, steps):
-        """Train MM for N steps"""
-
-        total_profit = 0.0
-
         obs = self.adv_env.reset()
-
-        for step in range(steps):
-            # Trader acts
-            trader_action = self.trader.act(obs)
-
-            # MM responds and learns
-            obs, trader_reward, done, info = self.adv_env.step(trader_action)
-
-            mm_profit = info.get('mm_profit', 0.0)
-            total_profit += mm_profit
-
+        self._reset_trader_state()
+        total_profit = 0.0
+        episode_open = True
+        for step in range(int(steps)):
+            action = self._trader_action(obs, deterministic=True)
+            obs, _, done, info = self.adv_env.step(action)
+            total_profit += info["mm_profit"]
             if done:
-                obs = self.adv_env.reset()
+                self.mm.finish_episode()
+                episode_open = False
+                self._reset_trader_state()
+                if step + 1 < steps:
+                    obs = self.adv_env.reset()
+                    episode_open = True
+        if episode_open:
+            self.mm.finish_episode()
+        return total_profit / max(int(steps), 1)
 
-        return total_profit / steps
-
-    def _print_final_stats(self):
-        """Print final statistics"""
-
-        logger.info("\n" + "="*60)
-        logger.info("FINAL STATISTICS")
-        logger.info("="*60)
-
-        trader_avg = np.mean(self.history['trader_wins'])
-        mm_avg = np.mean(self.history['mm_profits'])
-
-        logger.info(f"Trader avg reward: {trader_avg:.4f}")
-        logger.info(f"MM avg profit: {mm_avg:.4f}")
-        logger.info(f"Total epochs: {self.history['epochs']}")
-
-        # Who won overall?
-        if trader_avg > 0:
-            logger.info("🏆 Trader won overall!")
-        elif mm_avg > 0:
-            logger.info("🎭 Market Maker won overall!")
-        else:
-            logger.info("⚖️ Perfectly balanced (as all things should be)")
-
-
-# Example usage
-if __name__ == "__main__":
-    print("🥊 Self-Play Adversarial Training Demo\n")
-
-    # Create agents (mock)
-    class MockTrader:
-        def act(self, obs):
-            return np.random.choice([0, 1])
-
-    class MockEnv:
-        def step(self, action):
-            return np.random.randn(100), np.random.randn(), False, {}
-        def reset(self):
-            return np.random.randn(100)
-
-    # Create MM
-    mm = MarketMakerAgent(state_dim=100, action_dim=4)
-
-    # Create adversarial env
-    env = MockEnv()
-    adv_env = AdversarialTradingEnv(env, mm)
-
-    # Test a few steps
-    print("Testing adversarial environment...")
-    obs = adv_env.reset()
-    trader = MockTrader()
-
-    for i in range(5):
-        action = trader.act(obs)
-        obs, reward, done, info = adv_env.step(action)
-
-        print(f"Step {i+1}: Action={action}, Reward={reward:.4f}, MM={info['manipulation_type']}")
-
-    # Show MM stats
-    stats = mm.get_statistics()
-    print(f"\n📊 Market Maker Statistics:")
-    print(f"   Total profit: {stats['total_profit']:.4f}")
-    print(f"   Successful traps: {stats['successful_traps']}")
-
-    print("\n✅ Self-play adversarial training system working!")
-    print("\nThis is how you create a superhuman trader:")
-    print("  1. Train Trader vs MM for 1000 epochs")
-    print("  2. Trader learns to avoid every trap")
-    print("  3. MM learns new tricks")
-    print("  4. Arms race continues")
-    print("  5. Trader becomes immune to manipulation")
-    print("\n→ Path to God Mode unlocked 🔥")
+    def train(self, num_epochs=100, steps_per_epoch=1000):
+        for _ in range(int(num_epochs)):
+            trader_reward = self._train_trader(steps_per_epoch)
+            mm_profit = self._train_mm(steps_per_epoch)
+            self.history["trader_wins"].append(trader_reward)
+            self.history["mm_profits"].append(mm_profit)
+            self.history["epochs"] += 1
+        return self.history

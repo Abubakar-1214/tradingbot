@@ -107,3 +107,64 @@ class DreamerPolicy:
             torch.tensor([int(action)], device=self.agent.device),
             num_classes=self.action_dim,
         ).float()
+
+
+class TransformerPolicy:
+    def __init__(self, agent):
+        self.agent = agent
+        self.action_dim = int(agent.action_dim)
+        self.obs_dim = int(agent.obs_dim)
+
+    def reset(self) -> None:
+        return None
+
+    def act(self, obs: np.ndarray) -> PolicyOutput:
+        action, logp, value = self.agent.act(obs, deterministic=True)
+        probs = self.agent.policy_probs(
+            np.asarray(obs, dtype=np.float32).reshape(1, -1)
+        )[0].detach().cpu().numpy().astype(np.float64)
+        probs /= probs.sum()
+        return PolicyOutput(
+            int(action),
+            probs,
+            float(probs[action]),
+            {"logp": float(logp), "value": float(value)},
+        )
+
+    def observe_executed(self, action: int) -> None:
+        if not 0 <= int(action) < self.action_dim:
+            raise ValueError(f"action {action} outside [0, {self.action_dim})")
+
+
+class DreamerMCTSPolicy:
+    def __init__(self, dreamer_agent, num_simulations=32, c_puct=1.0):
+        from models.mcts import DreamerMCTSAgent
+
+        self.agent = DreamerMCTSAgent(
+            dreamer_agent,
+            num_simulations=num_simulations,
+            c_puct=c_puct,
+        )
+        self.action_dim = int(dreamer_agent.action_dim)
+        self.obs_dim = int(dreamer_agent.obs_dim)
+
+    def reset(self):
+        self.agent.reset()
+
+    def act(self, obs):
+        one_hot, _ = self.agent.act(obs)
+        action = int(np.argmax(one_hot))
+        stats = self.agent.last_stats or {}
+        probs = np.asarray(
+            stats.get("visit_distribution", np.eye(self.action_dim)[action]),
+            dtype=np.float64,
+        )
+        return PolicyOutput(
+            action,
+            probs,
+            float(probs[action]),
+            stats,
+        )
+
+    def observe_executed(self, action):
+        self.agent.observe_executed(action)

@@ -1,9 +1,6 @@
 import argparse
-import json
 import random
-import subprocess
 import sys
-from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
@@ -13,7 +10,7 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from core.model_artifacts import ModelManifest, artifact_dir, save_manifest
+from core.model_artifacts import artifact_dir
 from env.dreamer_trading_env import (
     DEFAULT_ENV_KWARGS,
     EVAL_ENV_OVERRIDES,
@@ -21,25 +18,13 @@ from env.dreamer_trading_env import (
 )
 from models.dreamer_agent import DreamerV3Agent
 from models.policy import DreamerPolicy
+from train.common import write_model_artifact
 from train.data import prepare_data
 from train.evaluate import evaluate_policy, write_evaluation
 
 
 def _arg(args, name, default):
     return getattr(args, name, default)
-
-
-def _git_commit():
-    try:
-        return subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            cwd=ROOT,
-            check=True,
-            capture_output=True,
-            text=True,
-        ).stdout.strip()
-    except (OSError, subprocess.CalledProcessError):
-        return None
 
 
 def train(args) -> Path:
@@ -77,9 +62,6 @@ def train(args) -> Path:
     obs_dim = int(env.observation_space)
     artifact_root = Path(_arg(args, "artifact_root", "artifacts/models"))
     out_dir = artifact_dir(artifact_root, "dreamer", _arg(args, "run_name", None))
-    contract_path = out_dir / "feature_contract.json"
-    contract_path.write_text(json.dumps(data.contract, indent=2), encoding="utf-8")
-
     resume = _arg(args, "resume", None)
     if resume:
         agent = DreamerV3Agent.from_checkpoint(resume, device=device)
@@ -133,23 +115,21 @@ def train(args) -> Path:
 
     model_path = out_dir / "model.pt"
     agent.save(model_path)
-    manifest = ModelManifest(
+    write_model_artifact(
+        out_dir,
         model_type="dreamer",
         model_file=model_path.name,
-        contract_file=contract_path.name,
-        contract_hash=data.contract["hash"],
         window=data.window,
         n_features=len(data.feature_names),
         obs_dim=obs_dim,
         action_dim=action_dim,
         allow_short=allow_short,
+        contract=data.contract,
         symbol=_arg(args, "symbol", "XAUUSD"),
         timeframe=_arg(args, "timeframe", "H1"),
-        train_start=str(data.ts_train[0]),
-        train_end=str(train_end),
+        train_start=data.ts_train[0],
+        train_end=train_end,
         test_end=_arg(args, "test_end", None),
-        created_at=datetime.now(timezone.utc).isoformat(),
-        git_commit=_git_commit(),
         hyperparams={
             "steps": steps,
             "prefill": prefill_steps,
@@ -162,7 +142,6 @@ def train(args) -> Path:
             "horizon": int(_arg(args, "horizon", 15)),
         },
     )
-    save_manifest(manifest, out_dir)
     if len(data.X_test) <= data.window + 2:
         raise ValueError("test period must contain more than window+2 feature rows")
     policy = DreamerPolicy(agent)

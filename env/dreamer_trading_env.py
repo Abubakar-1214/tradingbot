@@ -184,6 +184,7 @@ class RealisticTradingEnv:
 
     # --------------------------------------------------------------- episode
     def reset(self):
+        self._pending_perturbation = (1.0, 1.0, 0.0)
         if self.random_start and self.max_episode_steps is not None:
             hi = self.T - 1 - min(self.max_episode_steps, self.T - 1 - self.window)
             self.t = int(self.rng.integers(self.window, max(self.window, hi) + 1))
@@ -237,7 +238,13 @@ class RealisticTradingEnv:
             return {0: 0, 1: 1, 2: -1}[idx]
         return 1 if idx == 1 else 0
 
-    def _fill_cost(self, size_change, t):
+    def set_perturbation(self, spread_mult=1.0, slippage_mult=1.0, adverse_gap=0.0):
+        values = np.asarray([spread_mult, slippage_mult, adverse_gap], dtype=np.float64)
+        if not np.isfinite(values).all() or np.any(values < 0):
+            raise ValueError("perturbation values must be finite and non-negative")
+        self._pending_perturbation = tuple(float(value) for value in values)
+
+    def _fill_cost(self, size_change, t, spread_mult=1.0, slippage_mult=1.0):
         """Fractional cost (of notional traded) for changing exposure by |size_change|."""
         if size_change == 0:
             return 0.0
@@ -251,6 +258,10 @@ class RealisticTradingEnv:
         if self.event_mask[t]:
             spread *= self.event_spread_multiplier
             slip *= self.event_slippage_multiplier
+        if spread_mult != 1.0:
+            spread *= spread_mult
+        if slippage_mult != 1.0:
+            slip *= slippage_mult
 
         slip_draw = abs(self.rng.normal(slip, 0.5 * slip))
         if self.rng.random() < self.slippage_prob_adverse:
@@ -279,14 +290,16 @@ class RealisticTradingEnv:
         self.total_costs += cash
         return cash
 
-    def _liquidate(self, pos, t):
+    def _liquidate(self, pos, t, spread_mult=1.0, slippage_mult=1.0):
         """Close an open position at bar t: pay the exit fill, then book the trade."""
-        cost = self._fill_cost(pos * self.leverage, t)
+        cost = self._fill_cost(pos * self.leverage, t, spread_mult, slippage_mult)
         self._debit(cost)
         self._close_trade()
         return cost
 
     def step(self, action_onehot):
+        spread_mult, slippage_mult, adverse_gap = self._pending_perturbation
+        self._pending_perturbation = (1.0, 1.0, 0.0)
         prev_pos = self.pos
         new_pos = self._decode_action(action_onehot)
         t = self.t
@@ -303,9 +316,13 @@ class RealisticTradingEnv:
         # 2. Execute position change at bar open: exit the old side, then enter the new.
         if new_pos != prev_pos:
             if prev_pos != 0:
-                cost += self._liquidate(prev_pos, t)
+                cost += self._liquidate(prev_pos, t, spread_mult, slippage_mult)
             if new_pos != 0:
-                cost += self._debit(self._fill_cost(new_pos * self.leverage, t))
+                cost += self._debit(
+                    self._fill_cost(
+                        new_pos * self.leverage, t, spread_mult, slippage_mult
+                    )
+                )
                 self._open_trade()
 
         # 3. Hold through the bar; SL/TP are checked against the bar's move.
@@ -314,7 +331,8 @@ class RealisticTradingEnv:
         forced_close = False
         if new_pos != 0:
             trade_move = self.trade_pnl + gross  # cumulative leveraged pnl of the trade
-            if self.stop_loss is not None and trade_move <= -self.stop_loss:
+            stop_move = trade_move - abs(adverse_gap) * abs(exposure)
+            if self.stop_loss is not None and stop_move <= -self.stop_loss:
                 gross = -self.stop_loss - self.trade_pnl
                 forced_close = True
                 self.sl_hits += 1
@@ -329,7 +347,7 @@ class RealisticTradingEnv:
             self.bars_in_trade += 1
 
         if forced_close:
-            cost += self._liquidate(new_pos, t)
+            cost += self._liquidate(new_pos, t, spread_mult, slippage_mult)
             new_pos = 0
 
         # 4. Termination; any position still open at episode end is liquidated.
@@ -341,7 +359,7 @@ class RealisticTradingEnv:
                     and 1.0 - self.equity / max(self.peak_equity, self.equity) >= self.max_drawdown)
         done = bool(blown_up or out_of_data or truncated)
         if done and new_pos != 0:
-            cost += self._liquidate(new_pos, t)
+            cost += self._liquidate(new_pos, t, spread_mult, slippage_mult)
             new_pos = 0
         self.pos = new_pos
 

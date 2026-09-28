@@ -1,289 +1,182 @@
-"""
-Ensemble of Models - Robustness through Diversity
+from collections import Counter
 
-One model can fail. Five models all agreeing is much more reliable.
-
-Strategy:
-- Train 5 different models (different seeds, slight architecture variations)
-- Only trade when CONSENSUS (>=3 models agree)
-- Use disagreement as uncertainty measure
-
-Benefits:
-- More robust to individual model failures
-- Uncertainty estimation
-- Reduced overfitting
-- Better generalization
-"""
-
-import torch
-import torch.nn as nn
 import numpy as np
-import logging
+import torch
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+from models.policy import PolicyOutput
+
+
+class EnsemblePolicy:
+    def __init__(self, members, min_agreement=0.6, vote="soft", weights=None):
+        if not members:
+            raise ValueError("an ensemble requires at least one member")
+        if vote not in {"soft", "hard"}:
+            raise ValueError("vote must be 'soft' or 'hard'")
+        self.members = list(members)
+        self.min_agreement = float(min_agreement)
+        if not 0.0 <= self.min_agreement <= 1.0:
+            raise ValueError("min_agreement must be between 0 and 1")
+        self.vote = vote
+        self.action_dim = max(int(member.action_dim) for member in self.members)
+        if self.action_dim < 2:
+            raise ValueError("ensemble members must have at least two actions")
+        self.obs_dim = int(self.members[0].obs_dim)
+        if any(int(member.obs_dim) != self.obs_dim for member in self.members):
+            raise ValueError("ensemble members must have the same obs_dim")
+        if any(int(member.action_dim) > 3 for member in self.members):
+            raise ValueError("ensemble supports at most three discrete actions")
+        raw_weights = np.ones(len(self.members), dtype=np.float64) if weights is None else np.asarray(
+            weights, dtype=np.float64
+        )
+        if raw_weights.shape != (len(self.members),):
+            raise ValueError("weights must contain one value per ensemble member")
+        if not np.isfinite(raw_weights).all() or np.any(raw_weights < 0):
+            raise ValueError("weights must be finite and non-negative")
+        if raw_weights.sum() <= 0:
+            raise ValueError("at least one ensemble weight must be positive")
+        self.weights = raw_weights / raw_weights.sum()
+
+    def reset(self):
+        for member in self.members:
+            member.reset()
+
+    def observe_executed(self, action):
+        for member in self.members:
+            member_action = int(action)
+            if member_action >= int(member.action_dim):
+                member_action = 0
+            member.observe_executed(member_action)
+
+    def _member_prediction(self, member, obs):
+        output = member.act(obs)
+        if isinstance(output, PolicyOutput):
+            action = int(output.action)
+            probs = np.asarray(output.probs, dtype=np.float64).reshape(-1)
+        else:
+            if isinstance(output, tuple):
+                output = output[0]
+            values = np.asarray(output)
+            if values.ndim == 0 or values.size == 1:
+                action = int(values.reshape(-1)[0])
+                probs = np.zeros(int(member.action_dim), dtype=np.float64)
+                probs[action] = 1.0
+            else:
+                probs = values.astype(np.float64).reshape(-1)
+                action = int(np.argmax(probs))
+        member_dim = int(member.action_dim)
+        if not 0 <= action < member_dim:
+            raise ValueError(f"member returned invalid action {action}")
+        if probs.size != member_dim:
+            raise ValueError(
+                f"member probability width {probs.size} != action_dim {member_dim}"
+            )
+        if not np.isfinite(probs).all() or np.any(probs < 0) or probs.sum() <= 0:
+            raise ValueError("member returned invalid action probabilities")
+        probs = probs / probs.sum()
+        padded = np.zeros(self.action_dim, dtype=np.float64)
+        padded[:member_dim] = probs
+        return action, padded
+
+    def act(self, obs):
+        predictions = [
+            self._member_prediction(member, obs) for member in self.members
+        ]
+        member_actions = [action for action, _ in predictions]
+        member_probs = np.stack([probs for _, probs in predictions])
+        if self.vote == "soft":
+            probs = np.average(member_probs, axis=0, weights=self.weights)
+            selected = int(np.argmax(probs))
+        else:
+            counts = np.zeros(self.action_dim, dtype=np.float64)
+            for weight, action in zip(self.weights, member_actions):
+                counts[action] += weight
+            probs = counts
+            probs /= probs.sum()
+            selected = int(np.argmax(counts))
+
+        agreement = float(
+            sum(weight for weight, action in zip(self.weights, member_actions) if action == selected)
+        )
+        consensus = agreement >= self.min_agreement
+        action = selected if consensus else 0
+        entropy = -float(np.sum(probs * np.log(np.maximum(probs, 1e-12))))
+        uncertainty = entropy / np.log(self.action_dim) if self.action_dim > 1 else 0.0
+        kl = np.sum(
+            member_probs
+            * np.log(np.maximum(member_probs, 1e-12) / np.maximum(probs, 1e-12)),
+            axis=1,
+        )
+        epistemic = float(np.average(kl, weights=self.weights))
+        return PolicyOutput(
+            action=action,
+            probs=probs,
+            confidence=float(probs[action]),
+            info={
+                "member_actions": member_actions,
+                "agreement": agreement,
+                "consensus": consensus,
+                "uncertainty": float(uncertainty),
+                "epistemic": epistemic,
+                "epistemic_uncertainty": epistemic,
+                "epistemic_disagreement": epistemic,
+            },
+        )
 
 
 class EnsembleAgent:
-    """
-    Ensemble of 5 different trading models
-
-    Only trades when majority agrees
-    Uses disagreement to measure uncertainty
-    """
-
     def __init__(self, agent_class, num_models=5, **agent_kwargs):
-        """
-        Initialize ensemble
-
-        Args:
-            agent_class: Agent class to ensemble
-            num_models: Number of models in ensemble (default: 5)
-            **agent_kwargs: Arguments to pass to each agent
-        """
-
-        self.num_models = num_models
+        self.num_models = int(num_models)
+        if self.num_models < 1:
+            raise ValueError("num_models must be positive")
         self.models = []
-
-        # Create models with different random seeds
-        for i in range(num_models):
-            # Vary architecture slightly
+        for index in range(self.num_models):
             kwargs = agent_kwargs.copy()
+            if "hidden_dim" in kwargs:
+                kwargs["hidden_dim"] += index * 16
+            torch.manual_seed(42 + index)
+            np.random.seed(42 + index)
+            self.models.append(agent_class(**kwargs))
 
-            # Add variation
-            if 'hidden_dim' in kwargs:
-                kwargs['hidden_dim'] = kwargs['hidden_dim'] + i * 16
-
-            # Set different seed
-            torch.manual_seed(42 + i)
-            np.random.seed(42 + i)
-
-            # Create model
-            model = agent_class(**kwargs)
-            self.models.append(model)
-
-        logger.info(f"🎼 Ensemble initialized with {num_models} models")
+    @staticmethod
+    def _action(result):
+        if isinstance(result, tuple):
+            result = result[0]
+        values = np.asarray(result)
+        if values.ndim == 0 or values.size == 1:
+            return int(values.reshape(-1)[0])
+        return int(np.argmax(values))
 
     def act(self, obs, use_consensus=True, consensus_threshold=3):
-        """
-        Get action from ensemble
-
-        Args:
-            obs: Observation
-            use_consensus: If True, require consensus
-            consensus_threshold: Minimum agreeing models (default: 3/5)
-
-        Returns:
-            action: Final action
-            info: Dict with voting details
-        """
-
-        # Get predictions from all models
-        actions = []
-        q_values = []
-
-        for model in self.models:
-            action = model.act(obs)
-            actions.append(action)
-
-            # Get Q-value if available
-            if hasattr(model, 'get_q_value'):
-                q = model.get_q_value(obs, action)
-                q_values.append(q)
-
-        # Count votes
-        action_counts = {}
-        for action in actions:
-            action_counts[action] = action_counts.get(action, 0) + 1
-
-        # Get majority action
-        majority_action = max(action_counts, key=action_counts.get)
-        majority_count = action_counts[majority_action]
-
-        if use_consensus:
-            # Check if consensus met
-            if majority_count >= consensus_threshold:
-                final_action = majority_action
-                consensus = True
-            else:
-                # No consensus - stay flat
-                final_action = 0
-                consensus = False
-        else:
-            # Simple majority
-            final_action = majority_action
-            consensus = True
-
-        # Compute uncertainty
-        uncertainty = self.get_uncertainty(actions)
-
-        info = {
-            'actions': actions,
-            'action_counts': action_counts,
-            'majority_action': majority_action,
-            'majority_count': majority_count,
-            'consensus': consensus,
-            'uncertainty': uncertainty,
-            'q_values': q_values if q_values else None,
+        actions = [self._action(model.act(obs)) for model in self.models]
+        counts = Counter(actions)
+        majority_action, majority_count = counts.most_common(1)[0]
+        consensus = majority_count >= consensus_threshold
+        action = majority_action if not use_consensus or consensus else 0
+        probabilities = np.asarray(list(counts.values()), dtype=np.float64) / len(actions)
+        uncertainty = -float(np.sum(probabilities * np.log(probabilities + 1e-10)))
+        return action, {
+            "actions": actions,
+            "action_counts": dict(counts),
+            "majority_action": majority_action,
+            "majority_count": majority_count,
+            "consensus": consensus if use_consensus else True,
+            "uncertainty": uncertainty,
+            "q_values": None,
         }
 
-        return final_action, info
-
     def get_uncertainty(self, actions):
-        """
-        Measure disagreement between models
-
-        High disagreement = high uncertainty = don't trade
-
-        Returns:
-            entropy: Uncertainty measure (0 = all agree, high = disagree)
-        """
-
-        # Count each action
-        action_counts = {}
-        for action in actions:
-            action_counts[action] = action_counts.get(action, 0) + 1
-
-        # Compute probabilities
-        total = len(actions)
-        probs = [count / total for count in action_counts.values()]
-
-        # Compute entropy
-        entropy = -sum(p * np.log(p + 1e-10) for p in probs)
-
-        return entropy
+        counts = Counter(actions)
+        probabilities = np.asarray(list(counts.values()), dtype=np.float64) / len(actions)
+        return -float(np.sum(probabilities * np.log(probabilities + 1e-10)))
 
     def train(self, *args, **kwargs):
-        """Train all models"""
-
-        for i, model in enumerate(self.models):
-            logger.info(f"Training model {i+1}/{self.num_models}...")
+        for model in self.models:
             model.train(*args, **kwargs)
 
     def save(self, path_prefix):
-        """Save all models"""
-
-        for i, model in enumerate(self.models):
-            path = f"{path_prefix}_model{i}.pt"
-            model.save(path)
-
-        logger.info(f"💾 Saved {self.num_models} models")
+        for index, model in enumerate(self.models):
+            model.save(f"{path_prefix}_model{index}.pt")
 
     def load(self, path_prefix):
-        """Load all models"""
-
-        for i, model in enumerate(self.models):
-            path = f"{path_prefix}_model{i}.pt"
-            model.load(path)
-
-        logger.info(f"📂 Loaded {self.num_models} models")
-
-
-# Mock agent for testing
-class MockAgent:
-    def __init__(self, hidden_dim=256, bias=0.0):
-        self.hidden_dim = hidden_dim
-        self.bias = bias  # Bias toward certain action
-
-    def act(self, obs):
-        # Random action with bias
-        if np.random.random() < 0.5 + self.bias:
-            return 1
-        else:
-            return 0
-
-    def train(self, *args, **kwargs):
-        pass
-
-    def save(self, path):
-        pass
-
-    def load(self, path):
-        pass
-
-
-# Example usage
-if __name__ == "__main__":
-    print("🎼 Ensemble Agent Demo\n")
-
-    # Create ensemble
-    ensemble = EnsembleAgent(
-        agent_class=MockAgent,
-        num_models=5,
-        hidden_dim=256
-    )
-
-    # Test voting
-    print("="*60)
-    print("Test 1: Strong Consensus")
-    print("="*60)
-
-    # Mock observation
-    obs = np.random.randn(100)
-
-    # Get action
-    action, info = ensemble.act(obs, use_consensus=True, consensus_threshold=3)
-
-    print(f"Individual votes: {info['actions']}")
-    print(f"Vote counts: {info['action_counts']}")
-    print(f"Majority action: {info['majority_action']} ({info['majority_count']}/5 votes)")
-    print(f"Consensus: {info['consensus']}")
-    print(f"Final action: {action}")
-    print(f"Uncertainty: {info['uncertainty']:.3f}")
-
-    # Test multiple times
-    print("\n" + "="*60)
-    print("Test 2: Multiple Decisions")
-    print("="*60)
-
-    consensus_count = 0
-    no_consensus_count = 0
-
-    for i in range(20):
-        obs = np.random.randn(100)
-        action, info = ensemble.act(obs, use_consensus=True)
-
-        if info['consensus']:
-            consensus_count += 1
-        else:
-            no_consensus_count += 1
-
-    print(f"Total decisions: 20")
-    print(f"Consensus reached: {consensus_count}")
-    print(f"No consensus: {no_consensus_count}")
-    print(f"Consensus rate: {consensus_count/20:.1%}")
-
-    # Test uncertainty
-    print("\n" + "="*60)
-    print("Test 3: Uncertainty Measurement")
-    print("="*60)
-
-    # Create biased ensemble (models disagree more)
-    class BiasedMockAgent(MockAgent):
-        def __init__(self, hidden_dim=256, model_id=0):
-            bias = (model_id - 2) * 0.2  # Different biases
-            super().__init__(hidden_dim, bias)
-
-    biased_ensemble = EnsembleAgent(
-        agent_class=BiasedMockAgent,
-        num_models=5,
-        hidden_dim=256
-    )
-
-    obs = np.random.randn(100)
-    action, info = biased_ensemble.act(obs)
-
-    print(f"Individual votes: {info['actions']}")
-    print(f"Uncertainty: {info['uncertainty']:.3f}")
-
-    if info['uncertainty'] > 0.5:
-        print("⚠️ HIGH UNCERTAINTY - Models disagree - Maybe don't trade")
-    else:
-        print("✅ LOW UNCERTAINTY - Models agree - Safe to trade")
-
-    print("\n✅ Ensemble system working!")
-    print("\nKey benefits:")
-    print("  ✅ Robustness - One model failing doesn't crash system")
-    print("  ✅ Uncertainty - Know when models disagree")
-    print("  ✅ Consensus - Only trade when majority agrees")
-    print("  ✅ Better generalization - Average out overfitting")
+        for index, model in enumerate(self.models):
+            model.load(f"{path_prefix}_model{index}.pt")

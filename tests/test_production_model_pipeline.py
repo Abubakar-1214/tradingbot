@@ -253,7 +253,7 @@ def test_evaluation_flat_policy_and_promotion_gate():
     )
     assert metrics["trades"] == 0
     assert metrics["buy_hold_return_pct"] == pytest.approx(
-        np.expm1(returns.sum()) * 100.0
+        np.expm1(returns[4:4 + metrics["bars"]].sum()) * 100.0
     )
     assert promotion_gate(
         {"sharpe": 0.7, "max_dd_pct": 12.0, "trades": 22, "total_return_pct": 2.0}
