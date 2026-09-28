@@ -476,20 +476,21 @@ class LiveTrader:
         for position in positions:
             side = 1.0 if position.side == "buy" else -1.0
             price = tick["bid"] if side > 0 else tick["ask"]
-            price_return = (
-                (price - position.open_price) / position.open_price * side
+            leverage = 1.0
+            manifest = getattr(self.signal_source, "manifest", None)
+            if manifest is not None:
+                leverage = float(
+                    manifest.extra.get(
+                        "leverage",
+                        manifest.hyperparams.get("leverage", 1.0),
+                    )
+                )
+            trade_pnl += (
+                (price - position.open_price) / position.open_price
+                * side
+                * leverage
             )
             meta = self.executor.get_trade_meta(position.ticket)
-            entry_equity = float(
-                meta.get("entry_equity", self.executor.reference_equity or equity)
-            )
-            trade_pnl += (
-                price_return
-                * position.open_price
-                * position.volume
-                * 100.0
-                / max(entry_equity, 1e-9)
-            )
             bars_in_trade = max(
                 bars_in_trade, int(meta.get("bars_held", 0))
             )

@@ -17,6 +17,9 @@
 ## 📋 Table of Contents
 
 - [Honest Status](#-honest-status)
+- [Model Pipeline Status](#model-pipeline-status)
+- [Model Catalog](docs/MODELS.md)
+- [Training and Deployment Guide](docs/TRAINING_GUIDE.md)
 - [Verified Facts](#-verified-facts)
 - [How It Works](#-how-it-works)
 - [Installation](#%EF%B8%8F-installation)
@@ -27,6 +30,22 @@
 - [Backtest Verdict (Honest)](#-backtest-verdict-honest)
 - [Live Trading](#-live-trading)
 - [Disclaimer](#%EF%B8%8F-disclaimer)
+
+---
+
+## Model pipeline status
+
+The shared observation, policy, artifact, training, backtest, and live model
+interfaces are implemented and covered by tests. **No trained model artifacts
+are shipped.** Users must train a model on their own data, evaluate it on a
+separate period, and pass the promotion gate before selecting it for live
+inference.
+
+The code is production-structured; no model is validated for real money until
+it passes the gate on your data and a demo period. See the
+[model catalog](docs/MODELS.md) and [training and deployment guide](docs/TRAINING_GUIDE.md)
+for supported model types, artifact contents, commands, limitations, and
+operational checks.
 
 ---
 
@@ -51,42 +70,43 @@ of costs.** See the [Backtest Verdict](#-backtest-verdict-honest) section.
 
 ## ✅ Verified Facts
 
-Everything below was re-run in the current cycle and the evidence is recorded
-in `artifacts/`:
+Current implementation verification is recorded below. The synthetic data,
+training artifacts, and command log used for this phase are under `/tmp` and
+are not shipped with the repository.
 
 | Check | Result | Evidence |
 |---|---|---|
-| Full pytest suite | **87 passed, 0 failed, exit 0** | `artifacts/pytest_final.txt` |
-| Six verify gates × 2 runs | **12/12 runs exit 0** (config 24/24, features 33/33, risk 29/29, backtest 26/26, broker 29/29, risk_integration 23/23) | `artifacts/gate_evidence.txt` |
-| P1 code fixes | **29/29 checks** (position sizing, Dreamer save/load, ReplayBuffer, evaluate_model) | `scripts/_verify_p1_fixes.py` |
-| Live loop demo smoke (demo mode) | exit 0, **10 real entries (long + short) with real ATR-based SL/TP, 10 real SL/TP fills with real PnL** through MockBroker | `artifacts/live_demo_smoke.txt` |
-| Feature pipeline | 39 causal features, train-window scaler only, contract enforced at load | `scripts/verify_features.py` |
-| Ops artifacts | pinned `requirements.txt` (20 `==` pins incl. `backtesting==0.6.2`), `.env` created + gitignored, every env key documented in `.env.example`, `pip check` clean | `artifacts/ops_evidence.txt` |
+| Full pytest suite | **139 passed** | `.venv/bin/python -m pytest tests env -q` |
+| Required verification gates | `verify_config.py` (24), `verify_risk.py` (29), `verify_broker.py` (29), `verify_risk_integration.py` (23) | `scripts/verify_*.py` |
+| Synthetic end-to-end workflow | Training, artifact assembly/adaptation, manifest backtest, and bounded model-backed MockBroker run | `/tmp/phase4_e2e.log` |
+| MT5 terminal export | Not exercised; MetaTrader5 terminal integration requires Windows | `scripts/export_mt5_history.py --help` and mocked offset test |
 
 ---
 
 ## 🔍 How It Works
 
 ```
-data/ (XAUUSD H1/D1 CSVs)
+OHLCV CSV + optional daily macro CSV
    ↓
-core/feature_pipeline.py — causal features (no future leakage),
-   scaler fit on TRAIN window only, feature_contract.json enforced at load
+train/data.py — chronological split; fit feature scaler on TRAIN only;
+   shared causal features and feature_contract.json
    ↓
-backtest/ — NEW engine on kernc/backtesting.py:
-   strategies.py (SmaCrossAtr, DonchianBreakout, RsiReversion, ML signal)
-   costs.py (spread + commission + slippage)
-   walk_forward.py (purge + embargo per López de Prado)
-   baselines.py (BuyHold, SeededRandom, SMA cross)
-   engine.py (Backtest runner + deterministic seeds)
+train/ — PPO, Transformer-PPO, Dreamer, MCTS manifest, ensembles,
+   optional MAML adaptation and adversarial fine-tuning
    ↓
-live/ — production stack:
-   broker.py (ABC) → mt5_broker.py (real MT5, retcode handling, idempotency)
-                   → mock_broker.py (deterministic simulated fills)
-   trade_executor.py (RiskSupervisor wired into EVERY order path)
-   risk_supervisor.py (SQLite circuit breakers)
-   live_trade_mt5.py (candle-close-aligned loop, TRADING_MODE=demo|live)
+manifest + feature_contract + model checkpoint
+   ↓
+train/evaluate.py — evaluation.json + promotion gate
+   ├── backtest/ — rule strategies, baselines, model signals, costs,
+   │               purge/embargo walk-forward
+   └── live/ — closed-bar features → policy → DecisionEngine
+              → TradeExecutor / RiskSupervisor → MockBroker or MT5
 ```
+
+Every trained policy uses the shared observation width
+`window * n_features + 5`; the live executor and risk circuit breakers remain
+in place regardless of the selected model. See the detailed
+[closed-bar live flow](docs/MODELS.md#live-processing-order).
 
 ---
 

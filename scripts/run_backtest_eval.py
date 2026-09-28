@@ -2,8 +2,8 @@
 scripts/run_backtest_eval.py — honest full backtest evaluation (Subtask 4).
 
 Runs every rule strategy and both baselines on:
-    * data/xauusd_d1.csv          (D1, 2005-)
-    * data/xauusd_h1_from_m1.csv  (H1, 2022-)
+    * data/xauusd_d1.csv          (D1, 2005-), or --d1-data
+    * data/xauusd_h1_from_m1.csv  (H1, 2022-), or --h1-data
 with the SAME validated CostModel and a fixed seed, then:
 
     * saves trades CSV + metrics.json + equity PNG for every run under
@@ -75,18 +75,46 @@ def load_ohlc(path: Path) -> pd.DataFrame:
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="Run the honest full backtest evaluation")
     parser.add_argument("--manifest", help="optional production model manifest")
+    parser.add_argument(
+        "--d1-data", type=Path, default=DATA_FILES["xauusd_d1"],
+        help="D1 OHLC CSV (default: data/xauusd_d1.csv)",
+    )
+    parser.add_argument(
+        "--h1-data", type=Path, default=DATA_FILES["xauusd_h1_from_m1"],
+        help="H1 OHLC CSV (default: data/xauusd_h1_from_m1.csv)",
+    )
+    parser.add_argument(
+        "--output-dir", type=Path,
+        help="base directory for timestamped backtest results",
+    )
+    parser.add_argument(
+        "--report-path", type=Path,
+        help="backtest report path (default: backtest/report_backtest.md)",
+    )
     args = parser.parse_args(argv)
+    data_files = {
+        "xauusd_d1": args.d1_data,
+        "xauusd_h1_from_m1": args.h1_data,
+    }
     ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-    out_dir = REPO / "research" / "backtest_results" / f"full_eval_{ts}"
+    output_root = args.output_dir or REPO / "research" / "backtest_results"
+    if not output_root.is_absolute():
+        output_root = REPO / output_root
+    out_dir = output_root / f"full_eval_{ts}"
     out_dir.mkdir(parents=True, exist_ok=True)
 
     all_runs = []      # strategy runs
     all_baselines = [] # baseline runs
+    dataset_summaries = []
 
-    for data_name, path in DATA_FILES.items():
+    for data_name, path in data_files.items():
         print(f"\n=== {data_name}: loading {path.name} ===")
         ohlc = load_ohlc(path)
         print(f"    {len(ohlc)} bars, {ohlc.index.min()} -> {ohlc.index.max()}")
+        timeframe = "D1" if data_name == "xauusd_d1" else "H1"
+        dataset_summaries.append(
+            (path, timeframe, len(ohlc), ohlc.index.min(), ohlc.index.max())
+        )
 
         for strat in STRATEGIES:
             print(f"  running {strat.__name__} ...")
@@ -98,7 +126,6 @@ def main(argv=None) -> int:
                   f"sharpe={m['sharpe']:.2f} maxDD={m['max_drawdown_pct']:.2f}%")
 
         manifest = load_manifest(args.manifest) if args.manifest else None
-        timeframe = "D1" if data_name == "xauusd_d1" else "H1"
         if manifest and manifest.timeframe.upper() == timeframe:
             model_ohlc = load_bars(path)
             signal = model_signal_frame(
@@ -149,7 +176,7 @@ def main(argv=None) -> int:
 
     # --- Out-of-sample walk-forward on D1 (purge/embargo) ------------------- #
     print("\n=== walk-forward OOS (D1, purge/embargo) ===")
-    ohlc_d1 = load_ohlc(DATA_FILES["xauusd_d1"])
+    ohlc_d1 = load_ohlc(data_files["xauusd_d1"])
     for strat in (SmaCrossAtr, RsiReversion, DonchianBreakout):
         wf = walk_forward(ohlc_d1, strat, COST, train_bars=1200, test_bars=400,
                           embargo_bars=25, data_name="xauusd_d1")
@@ -163,11 +190,14 @@ def main(argv=None) -> int:
 
     # --- Report ------------------------------------------------------------- #
     print("\n=== writing backtest/report_backtest.md ===")
+    data_rows = "\n".join(
+        f"| `{path}` | {timeframe} | {bars} | {start} → {end} |"
+        for path, timeframe, bars, start, end in dataset_summaries
+    )
     notes = (
         "## Data\n\n"
         "| File | TF | Bars | Range |\n|---|---|---|---|\n"
-        "| `data/xauusd_d1.csv` | D1 | 6,787 | 2005-01-02 → 2023-08 |\n"
-        "| `data/xauusd_h1_from_m1.csv` | H1 | 23,657 | 2022-01-02 23:00 → 2024-12 |\n\n"
+        f"{data_rows}\n\n"
         "All strategy and baseline runs use the **same** validated cost model "
         f"(`CostModel.from_config(CostConfig())` → `{COST.describe()}`) and seed `{SEED}`.\n\n"
         "## Method\n\n"
@@ -181,8 +211,11 @@ def main(argv=None) -> int:
         "out-of-sample with no warm-up leakage.\n"
         "* Zero-cost comparison is included so the true cost drag is visible.\n"
     )
+    report_path = args.report_path or REPO / "backtest" / "report_backtest.md"
+    if not report_path.is_absolute():
+        report_path = REPO / report_path
     write_report(
-        REPO / "backtest" / "report_backtest.md",
+        report_path,
         "Backtest evaluation report — NEW backtesting.py engine (honest)",
         runs=all_runs,
         baselines=all_baselines,

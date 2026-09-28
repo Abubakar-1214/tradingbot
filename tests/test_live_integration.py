@@ -394,3 +394,24 @@ def test_mt5_bars_convert_server_time_to_utc():
     ).last_closed_bars(1)
     assert bars.iloc[0]["time"] == pd.Timestamp("2023-12-31T22:00:00Z")
     assert bars.iloc[0]["volume"] == 12
+
+
+def test_live_account_trade_pnl_matches_env_price_return():
+    trader = object.__new__(LiveTrader)
+    trader.cfg = SimpleNamespace(broker=SimpleNamespace(symbol="XAUUSD"))
+    trader.signal_source = SimpleNamespace(manifest=None)
+    trader.broker = SimpleNamespace(
+        get_tick=lambda _symbol: {"bid": 2020.0, "ask": 2020.1}
+    )
+    trader.executor = SimpleNamespace(
+        get_trade_meta=lambda _ticket: {},
+        reference_equity=EQUITY,
+    )
+    trader.risk = SimpleNamespace(peak_equity=EQUITY)
+    position = SimpleNamespace(
+        ticket=1, side="buy", open_price=2000.0, volume=0.01
+    )
+
+    account = trader._account_state([position], EQUITY)
+
+    assert account.trade_pnl == pytest.approx(0.01)

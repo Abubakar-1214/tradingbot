@@ -1,11 +1,16 @@
 import argparse
 import json
 import math
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
+
+ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 from core.config import FeatureConfig
 from core.feature_pipeline import (
