@@ -128,6 +128,7 @@ class BrokerConfig:
     tp_atr_mult: float = 3.0          # take-profit distance in ATR units
     max_requote_retries: int = 3
     order_retry_delay_sec: float = 1.0
+    utc_offset_hours: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -151,6 +152,34 @@ class PathConfig:
 
 
 @dataclass(frozen=True)
+class ModelConfig:
+    signal_source: str = "rule"
+    manifest_path: Path = REPO_ROOT / "artifacts" / "models" / "production" / "manifest.json"
+    live_history_bars: int = 3000
+    macro_csv: Path | None = None
+
+
+@dataclass(frozen=True)
+class TradingBehaviorConfig:
+    min_confidence: float = 0.55
+    min_ensemble_agreement: float = 0.6
+    breakeven_at_r: float = 1.0
+    trail_start_r: float = 1.5
+    trail_atr_mult: float = 2.0
+    partial_close_at_r: float = 1.0
+    partial_close_fraction: float = 0.5
+    max_bars_in_trade: int = 72
+    cooldown_bars_after_loss: int = 3
+    session_filter: bool = True
+    no_trade_hours_utc: tuple[int, ...] = (21, 22)
+    use_kelly: bool = True
+    kelly_fraction: float = 0.25
+    kelly_min_trades: int = 30
+    require_promoted_model: bool = True
+    risk_per_trade: float = 0.02
+
+
+@dataclass(frozen=True)
 class AppConfig:
     """Top-level application configuration."""
 
@@ -162,6 +191,8 @@ class AppConfig:
     cost: CostConfig = field(default_factory=CostConfig)
     broker: BrokerConfig = field(default_factory=BrokerConfig)
     paths: PathConfig = field(default_factory=PathConfig)
+    model: ModelConfig = field(default_factory=ModelConfig)
+    behavior: TradingBehaviorConfig = field(default_factory=TradingBehaviorConfig)
     log_level: str = "INFO"
     raw: Dict[str, str] = field(default_factory=dict)
 
@@ -196,6 +227,23 @@ def _as_bool(name: str, val: Optional[str], default: bool) -> bool:
     if low in ("0", "false", "no", "off"):
         return False
     raise ValueError(f"Env var {name}={val!r} is not a valid boolean")
+
+
+def _repo_path(value: str | Path) -> Path:
+    path = Path(value)
+    return path if path.is_absolute() else REPO_ROOT / path
+
+
+def _hours_utc(value: str | None, default: tuple[int, ...]) -> tuple[int, ...]:
+    if value is None or value.strip() == "":
+        return default
+    try:
+        hours = tuple(int(item.strip()) for item in value.split(",") if item.strip())
+    except ValueError as exc:
+        raise ValueError(f"Env var NO_TRADE_HOURS_UTC={value!r} is not a list of hours") from exc
+    if any(hour < 0 or hour > 23 for hour in hours):
+        raise ValueError("NO_TRADE_HOURS_UTC values must be in [0, 23]")
+    return tuple(sorted(set(hours)))
 
 
 def load_config(env_file: Optional[str] = None, _env: Optional[Dict[str, str]] = None) -> AppConfig:
@@ -239,6 +287,30 @@ def load_config(env_file: Optional[str] = None, _env: Optional[Dict[str, str]] =
         )
 
     allow_short = _as_bool("ALLOW_SHORT", env.get("ALLOW_SHORT"), False)
+    signal_source = env.get("SIGNAL_SOURCE", "rule").strip().lower()
+    if signal_source == "ppo":
+        signal_source = "model"
+    if signal_source not in ("rule", "model"):
+        raise ValueError(
+            f"SIGNAL_SOURCE must be 'rule' or 'model' ('ppo' is an alias), got {signal_source!r}"
+        )
+
+    min_confidence = _as_float("MIN_CONFIDENCE", env.get("MIN_CONFIDENCE"), 0.55)
+    min_ensemble_agreement = _as_float(
+        "MIN_ENSEMBLE_AGREEMENT", env.get("MIN_ENSEMBLE_AGREEMENT"), 0.6
+    )
+    if not 0.0 <= min_confidence < 1.0:
+        raise ValueError("MIN_CONFIDENCE must be in [0, 1)")
+    if not 0.0 <= min_ensemble_agreement <= 1.0:
+        raise ValueError("MIN_ENSEMBLE_AGREEMENT must be in [0, 1]")
+    partial_close_fraction = _as_float(
+        "PARTIAL_CLOSE_FRACTION", env.get("PARTIAL_CLOSE_FRACTION"), 0.5
+    )
+    if not 0.0 <= partial_close_fraction <= 1.0:
+        raise ValueError("PARTIAL_CLOSE_FRACTION must be in [0, 1]")
+    kelly_fraction = _as_float("KELLY_FRACTION", env.get("KELLY_FRACTION"), 0.25)
+    if not 0.0 <= kelly_fraction <= 1.0:
+        raise ValueError("KELLY_FRACTION must be in [0, 1]")
 
     risk = RiskConfig(
         max_daily_loss=_as_float("MAX_DAILY_LOSS", env.get("MAX_DAILY_LOSS"), 0.05),
@@ -278,7 +350,12 @@ def load_config(env_file: Optional[str] = None, _env: Optional[Dict[str, str]] =
         tp_atr_mult=_as_float("TP_ATR_MULT", env.get("TP_ATR_MULT"), 3.0),
         max_requote_retries=_as_int("MAX_REQUOTE_RETRIES", env.get("MAX_REQUOTE_RETRIES"), 3),
         order_retry_delay_sec=_as_float("ORDER_RETRY_DELAY_SEC", env.get("ORDER_RETRY_DELAY_SEC"), 1.0),
+        utc_offset_hours=_as_float(
+            "BROKER_UTC_OFFSET_HOURS", env.get("BROKER_UTC_OFFSET_HOURS"), 0.0
+        ),
     )
+    if not -24.0 <= broker.utc_offset_hours <= 24.0:
+        raise ValueError("BROKER_UTC_OFFSET_HOURS must be in [-24, 24]")
 
     paths = PathConfig(
         data_dir=Path(env.get("DATA_DIR", str(REPO_ROOT / "data"))),
@@ -297,6 +374,59 @@ def load_config(env_file: Optional[str] = None, _env: Optional[Dict[str, str]] =
         drop_warmup=_as_int("FEATURE_DROP_WARMUP", env.get("FEATURE_DROP_WARMUP"), 200),
         normalize=_as_bool("FEATURE_NORMALIZE", env.get("FEATURE_NORMALIZE"), True),
     )
+    model = ModelConfig(
+        signal_source=signal_source,
+        manifest_path=_repo_path(
+            env.get(
+                "MODEL_MANIFEST",
+                str(REPO_ROOT / "artifacts" / "models" / "production" / "manifest.json"),
+            )
+        ),
+        live_history_bars=_as_int(
+            "LIVE_HISTORY_BARS", env.get("LIVE_HISTORY_BARS"), 3000
+        ),
+        macro_csv=(
+            _repo_path(env["MACRO_CSV"])
+            if env.get("MACRO_CSV", "").strip()
+            else None
+        ),
+    )
+    if model.live_history_bars < 1:
+        raise ValueError("LIVE_HISTORY_BARS must be positive")
+    behavior = TradingBehaviorConfig(
+        min_confidence=min_confidence,
+        min_ensemble_agreement=min_ensemble_agreement,
+        breakeven_at_r=_as_float("BREAKEVEN_AT_R", env.get("BREAKEVEN_AT_R"), 1.0),
+        trail_start_r=_as_float("TRAIL_START_R", env.get("TRAIL_START_R"), 1.5),
+        trail_atr_mult=_as_float("TRAIL_ATR_MULT", env.get("TRAIL_ATR_MULT"), 2.0),
+        partial_close_at_r=_as_float(
+            "PARTIAL_CLOSE_AT_R", env.get("PARTIAL_CLOSE_AT_R"), 1.0
+        ),
+        partial_close_fraction=partial_close_fraction,
+        max_bars_in_trade=_as_int("MAX_BARS_IN_TRADE", env.get("MAX_BARS_IN_TRADE"), 72),
+        cooldown_bars_after_loss=_as_int(
+            "COOLDOWN_BARS_AFTER_LOSS", env.get("COOLDOWN_BARS_AFTER_LOSS"), 3
+        ),
+        session_filter=_as_bool("SESSION_FILTER", env.get("SESSION_FILTER"), True),
+        no_trade_hours_utc=_hours_utc(
+            env.get("NO_TRADE_HOURS_UTC"), (21, 22)
+        ),
+        use_kelly=_as_bool("USE_KELLY", env.get("USE_KELLY"), True),
+        kelly_fraction=kelly_fraction,
+        kelly_min_trades=_as_int("KELLY_MIN_TRADES", env.get("KELLY_MIN_TRADES"), 30),
+        require_promoted_model=_as_bool(
+            "REQUIRE_PROMOTED_MODEL", env.get("REQUIRE_PROMOTED_MODEL"), True
+        ),
+        risk_per_trade=risk.risk_per_trade,
+    )
+    if behavior.breakeven_at_r < 0 or behavior.trail_start_r < 0:
+        raise ValueError("BREAKEVEN_AT_R and TRAIL_START_R must be non-negative")
+    if behavior.trail_atr_mult < 0 or behavior.partial_close_at_r < 0:
+        raise ValueError("TRAIL_ATR_MULT and PARTIAL_CLOSE_AT_R must be non-negative")
+    if behavior.max_bars_in_trade < 0 or behavior.cooldown_bars_after_loss < 0:
+        raise ValueError("MAX_BARS_IN_TRADE and COOLDOWN_BARS_AFTER_LOSS must be non-negative")
+    if behavior.kelly_min_trades < 0:
+        raise ValueError("KELLY_MIN_TRADES must be non-negative")
 
     cfg = AppConfig(
         trading_mode=mode,
@@ -307,6 +437,8 @@ def load_config(env_file: Optional[str] = None, _env: Optional[Dict[str, str]] =
         cost=cost,
         broker=broker,
         paths=paths,
+        model=model,
+        behavior=behavior,
         log_level=env.get("LOG_LEVEL", "INFO").upper(),
         raw=raw,
     )

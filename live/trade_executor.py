@@ -96,8 +96,19 @@ class TradeExecutor:
         self.halt_reason: str = ""
         self.last_bar_time: Optional[str] = None
         self._positions: Dict[int, PositionInfo] = {}
+        self.trade_meta: dict[int, dict[str, Any]] = {}
+        self.reference_equity: float | None = None
+        self.bars_since_last_loss: int | None = None
 
         self._load_local_state()
+        if self.reference_equity is None or self.reference_equity <= 0.0:
+            try:
+                self.reference_equity = float(self.broker.account_info().equity)
+            except BrokerError:
+                self.reference_equity = float(
+                    self.risk.current_equity or self.risk.initial_equity
+                )
+            self._save_local_state()
 
     # ------------------------------------------------------------------ #
     # Local state persistence (for startup reconciliation)
@@ -112,9 +123,23 @@ class TradeExecutor:
                 int(k): PositionInfo.from_dict(v)
                 for k, v in data.get("positions", {}).items()
             }
+            self.trade_meta = {
+                int(k): dict(v) for k, v in data.get("trade_meta", {}).items()
+            }
+            reference_equity = data.get("reference_equity")
+            self.reference_equity = (
+                float(reference_equity) if reference_equity is not None else None
+            )
+            bars_since_loss = data.get("bars_since_last_loss")
+            self.bars_since_last_loss = (
+                int(bars_since_loss) if bars_since_loss is not None else None
+            )
         except (ValueError, TypeError, KeyError, OSError):
             logger.warning("Local state load failed; starting with no positions", exc_info=True)
             self._positions = {}
+            self.trade_meta = {}
+            self.reference_equity = None
+            self.bars_since_last_loss = None
 
     def _save_local_state(self) -> None:
         if self.local_state_file is None:
@@ -124,6 +149,9 @@ class TradeExecutor:
             payload = {
                 "last_bar_time": self.last_bar_time,
                 "positions": {str(t): p.to_dict() for t, p in self._positions.items()},
+                "trade_meta": {str(t): v for t, v in self.trade_meta.items()},
+                "reference_equity": self.reference_equity,
+                "bars_since_last_loss": self.bars_since_last_loss,
                 "saved_ts": time.time(),
             }
             tmp = self.local_state_file.with_suffix(".json.tmp")
@@ -171,6 +199,7 @@ class TradeExecutor:
             # Drop phantom local positions the broker does not have.
             for m in rec.missing_in_broker:
                 self._positions.pop(m.ticket, None)
+                self.trade_meta.pop(m.ticket, None)
             self._save_local_state()
         return rec
 
@@ -229,7 +258,11 @@ class TradeExecutor:
         return total
 
     def fraction_and_volume(
-        self, equity: float, entry_price: float, atr: float
+        self,
+        equity: float,
+        entry_price: float,
+        atr: float,
+        size_multiplier: float = 1.0,
     ) -> Tuple[float, float]:
         """Explicit equity fraction + broker lot volume (P0-1/P0-2 fix).
 
@@ -240,8 +273,10 @@ class TradeExecutor:
         """
         if atr <= 0 or entry_price <= 0 or equity <= 0:
             return 0.0, 0.0
+        if not 0.0 < size_multiplier <= 1.0:
+            return 0.0, 0.0
         fraction = float(self.sizer.compute_position_size(atr, entry_price, equity))
-        fraction = min(fraction, self.cfg.risk.max_position)
+        fraction = min(fraction, self.cfg.risk.max_position) * size_multiplier
 
         notional_cap = self.cfg.risk.max_position * equity
         current = self._current_notional(entry_price)
@@ -252,8 +287,10 @@ class TradeExecutor:
             ideal_notional / (entry_price * XAUUSD_CONTRACT_SIZE) / LOT_STEP
         ) * LOT_STEP
         if volume < MIN_LOT:
-            # Only bump to MIN_LOT when it still fits inside the aggregate cap.
-            if MIN_LOT * entry_price * XAUUSD_CONTRACT_SIZE <= remaining_cap + 1e-9:
+            if (
+                size_multiplier == 1.0
+                and MIN_LOT * entry_price * XAUUSD_CONTRACT_SIZE <= remaining_cap + 1e-9
+            ):
                 volume = MIN_LOT
             else:
                 volume = 0.0
@@ -274,10 +311,13 @@ class TradeExecutor:
         df: Optional[pd.DataFrame],
         market_data: Optional[Dict[str, float]] = None,
         bar_time: Optional[str] = None,
+        size_multiplier: float = 1.0,
     ) -> Tuple[bool, str, Optional[OrderResult]]:
         """Open a new position.  Risk-gated BEFORE the broker is touched."""
         if self.halted:
             return False, f"EXECUTOR_HALTED: {self.halt_reason}", None
+        if not 0.0 < size_multiplier <= 1.0:
+            return False, "INVALID_SIZE_MULTIPLIER: expected (0, 1]", None
         direction = self._direction(signal)
         if direction not in (1, 2):
             return False, f"INVALID_ENTRY_SIGNAL: {signal!r}", None
@@ -290,7 +330,9 @@ class TradeExecutor:
         if atr <= 0:
             return False, "ATR_UNAVAILABLE: cannot size or set stops", None
 
-        fraction, volume = self.fraction_and_volume(equity, entry, atr)
+        fraction, volume = self.fraction_and_volume(
+            equity, entry, atr, size_multiplier
+        )
         if volume <= 0:
             return False, "BELOW_MIN_LOT: risk-capped size is smaller than broker MIN_LOT", None
 
@@ -315,6 +357,10 @@ class TradeExecutor:
             token=self._entry_token(direction, bar_time),
         )
         try:
+            entry_balance = float(self.broker.account_info().balance)
+        except BrokerError:
+            entry_balance = float(equity)
+        try:
             res = self.broker.submit_order(req)
         except BrokerError as e:
             return False, f"BROKER_ERROR: {e.message}", None
@@ -326,6 +372,15 @@ class TradeExecutor:
                 open_price=res.fill_price or entry, sl=sl, tp=tp,
                 magic=self.cfg.broker.magic,
             )
+            self.trade_meta[res.ticket] = {
+                "initial_sl": sl,
+                "entry_atr": atr,
+                "entry_equity": equity,
+                "entry_balance": entry_balance,
+                "bars_held": 0,
+                "partial_done": False,
+                "open_bar_time": bar_time,
+            }
             self.last_bar_time = bar_time
             self._save_local_state()
             logger.info("ENTRY %s ticket=%s vol=%.2f sl=%.2f tp=%.2f (risk=%s)",
@@ -385,6 +440,10 @@ class TradeExecutor:
             token=self._entry_token(direction, bar_time, prefix="scale"),
         )
         try:
+            entry_balance = float(self.broker.account_info().balance)
+        except BrokerError:
+            entry_balance = float(equity)
+        try:
             res = self.broker.submit_order(req)
         except BrokerError as e:
             return False, f"BROKER_ERROR: {e.message}", None
@@ -395,6 +454,15 @@ class TradeExecutor:
                 open_price=res.fill_price or entry, sl=sl, tp=tp,
                 magic=self.cfg.broker.magic,
             )
+            self.trade_meta[res.ticket] = {
+                "initial_sl": sl,
+                "entry_atr": atr,
+                "entry_equity": equity,
+                "entry_balance": entry_balance,
+                "bars_held": 0,
+                "partial_done": False,
+                "open_bar_time": bar_time,
+            }
             self.last_bar_time = bar_time
             self._save_local_state()
             return True, "APPROVED", res
@@ -468,6 +536,7 @@ class TradeExecutor:
             remaining = pos.volume - res.volume_filled
             if remaining <= 1e-9:
                 self._positions.pop(ticket, None)
+                self.trade_meta.pop(ticket, None)
             else:
                 self._positions[ticket] = PositionInfo(
                     ticket=pos.ticket, symbol=pos.symbol, side=pos.side,
@@ -480,6 +549,21 @@ class TradeExecutor:
     def update_risk_after_close(self, pnl: float, equity: float, is_win: bool) -> None:
         """Feed the supervisor the realized P&L after a close."""
         self.risk.update_state(pnl, equity, is_win)
+        if pnl < 0.0:
+            self.bars_since_last_loss = 0
+            self._save_local_state()
+
+    def advance_closed_bar(self) -> None:
+        if self.bars_since_last_loss is not None:
+            self.bars_since_last_loss += 1
+            self._save_local_state()
+
+    def get_trade_meta(self, ticket: int) -> dict[str, Any]:
+        return dict(self.trade_meta.get(int(ticket), {}))
+
+    def set_trade_meta(self, ticket: int, meta: dict[str, Any]) -> None:
+        self.trade_meta[int(ticket)] = dict(meta)
+        self._save_local_state()
 
     def reconcile_positions(self) -> None:
         """Drop local positions the broker no longer holds (external closes)."""
@@ -489,6 +573,7 @@ class TradeExecutor:
         for t in removed:
             logger.warning("Local position %s no longer on broker — removed from local state", t)
             self._positions.pop(t, None)
+            self.trade_meta.pop(t, None)
         if removed:
             self._save_local_state()
 

@@ -4,7 +4,6 @@ from __future__ import annotations
 import pytest
 
 from core.config import (
-    AppConfig,
     BrokerConfig,
     GateResult,
     RiskConfig,
@@ -25,6 +24,60 @@ def test_defaults_demo_mode() -> None:
     assert cfg.broker.tp_atr_mult == 3.0
     assert cfg.risk.max_daily_loss == 0.05
     assert cfg.risk.max_position == 0.10
+    assert cfg.model.signal_source == "rule"
+    assert cfg.model.live_history_bars == 3000
+    assert cfg.behavior.min_confidence == 0.55
+    assert cfg.behavior.no_trade_hours_utc == (21, 22)
+    assert cfg.broker.utc_offset_hours == 0.0
+
+
+def test_live_model_behavior_env_parsing_and_ppo_alias() -> None:
+    cfg = load_config(_env={
+        "SIGNAL_SOURCE": "ppo",
+        "MODEL_MANIFEST": "models/test/manifest.json",
+        "LIVE_HISTORY_BARS": "2500",
+        "MIN_CONFIDENCE": "0.7",
+        "MIN_ENSEMBLE_AGREEMENT": "0.75",
+        "REQUIRE_PROMOTED_MODEL": "false",
+        "BREAKEVEN_AT_R": "1.2",
+        "TRAIL_START_R": "1.7",
+        "TRAIL_ATR_MULT": "2.5",
+        "PARTIAL_CLOSE_AT_R": "1.1",
+        "PARTIAL_CLOSE_FRACTION": "0.25",
+        "MAX_BARS_IN_TRADE": "48",
+        "COOLDOWN_BARS_AFTER_LOSS": "4",
+        "SESSION_FILTER": "false",
+        "NO_TRADE_HOURS_UTC": "22, 21",
+        "USE_KELLY": "false",
+        "KELLY_FRACTION": "0.2",
+        "KELLY_MIN_TRADES": "20",
+        "BROKER_UTC_OFFSET_HOURS": "2",
+        "MACRO_CSV": "data/macro.csv",
+    })
+    assert cfg.model.signal_source == "model"
+    assert cfg.model.manifest_path.name == "manifest.json"
+    assert cfg.model.live_history_bars == 2500
+    assert cfg.behavior.min_confidence == 0.7
+    assert cfg.behavior.no_trade_hours_utc == (21, 22)
+    assert cfg.behavior.partial_close_fraction == 0.25
+    assert cfg.behavior.use_kelly is False
+    assert cfg.broker.utc_offset_hours == 2.0
+    assert cfg.model.macro_csv.name == "macro.csv"
+
+
+@pytest.mark.parametrize(
+    "key,value",
+    [
+        ("MIN_CONFIDENCE", "1"),
+        ("MIN_ENSEMBLE_AGREEMENT", "1.1"),
+        ("NO_TRADE_HOURS_UTC", "24"),
+        ("PARTIAL_CLOSE_FRACTION", "-0.1"),
+        ("LIVE_HISTORY_BARS", "0"),
+    ],
+)
+def test_invalid_live_behavior_config_raises(key, value) -> None:
+    with pytest.raises(ValueError):
+        load_config(_env={key: value})
 
 
 def test_env_parsing() -> None:

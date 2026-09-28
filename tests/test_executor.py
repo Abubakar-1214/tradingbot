@@ -18,14 +18,25 @@ Bug fixes this cycle (audit P0-1/P0-6 wiring proof):
 """
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 from datetime import datetime, timezone
 
-from live.broker import OrderRequest
+import pytest
+
+from live.broker import OrderRequest, PositionInfo
 from live.mock_broker import MockBroker
 from live.trade_executor import TradeExecutor
 from models.risk_supervisor import RiskSupervisor
-from tests.helpers import EQUITY, FakeClock, SmallSizer, build_executor, calm_md, make_config, sample_df
+from tests.helpers import (
+    EQUITY,
+    FakeClock,
+    SmallSizer,
+    build_executor,
+    calm_md,
+    make_config,
+    sample_df,
+)
 
 
 class ProbeExecutor(TradeExecutor):
@@ -89,7 +100,7 @@ def test_all_order_paths_call_check_trade(tmp_path) -> None:
     assert ok2, reason2
     assert ex.check_calls == 2
 
-    ticket = list(ex._positions.keys())[0]
+    ticket = next(iter(ex._positions))
     ok3, reason3, _ = ex.modify_sl_tp(ticket, sl=1980.0, tp=2040.0)
     assert ok3, reason3
     assert ex.check_calls == 3
@@ -275,3 +286,88 @@ def test_executor_determinism(tmp_path) -> None:
         results.append((ok, reason, res.fill_price))
     assert results[0][0] == results[1][0]
     assert results[0][2] == results[1][2]
+
+
+def test_size_multiplier_scales_volume_and_rejects_below_minimum(tmp_path) -> None:
+    class LargeSizer:
+        def compute_position_size(self, atr, price, equity):
+            return 0.08
+
+    ex = build_executor(_clock(), make_config(), tmp_path / "scaled")
+    ex.sizer = LargeSizer()
+    base_fraction, base_volume = ex.fraction_and_volume(EQUITY, 2000.0, 4.0)
+    half_fraction, half_volume = ex.fraction_and_volume(
+        EQUITY, 2000.0, 4.0, size_multiplier=0.5
+    )
+    assert half_fraction == pytest.approx(base_fraction * 0.5)
+    assert half_volume == pytest.approx(base_volume * 0.5)
+
+    small = build_executor(_clock(), make_config(), tmp_path / "small")
+    df = sample_df()
+    ok, reason, _ = small.execute_entry(
+        1,
+        equity=EQUITY,
+        df=df,
+        market_data=calm_md(small, df),
+        bar_time="2024-01-08T10:00:00",
+        size_multiplier=0.25,
+    )
+    assert not ok and "BELOW_MIN_LOT" in reason
+
+
+def test_trade_metadata_and_reference_equity_persist(tmp_path) -> None:
+    clock = _clock()
+    cfg = make_config()
+    ex = build_executor(clock, cfg, tmp_path)
+    df = sample_df()
+    ok, reason, result = ex.execute_entry(
+        1,
+        equity=EQUITY,
+        df=df,
+        market_data=calm_md(ex, df),
+        bar_time="2024-01-08T10:00:00",
+    )
+    assert ok, reason
+    metadata = ex.get_trade_meta(result.ticket)
+    assert metadata["initial_sl"] < ex._positions[result.ticket].open_price
+    assert metadata["entry_atr"] > 0
+    assert metadata["bars_held"] == 0
+    assert metadata["partial_done"] is False
+    assert metadata["open_bar_time"] == "2024-01-08T10:00:00"
+
+    loaded = TradeExecutor(
+        ex.broker,
+        ex.risk,
+        cfg,
+        sizer=SmallSizer(),
+        local_state_file=tmp_path / "bot_state.json",
+    )
+    assert loaded.get_trade_meta(result.ticket) == metadata
+    assert loaded.reference_equity == pytest.approx(EQUITY)
+
+
+def test_legacy_state_without_new_fields_loads(tmp_path) -> None:
+    broker = MockBroker(symbol="XAUUSD", balance=EQUITY, seed=42)
+    broker.connect()
+    risk = RiskSupervisor(
+        config=make_config().risk,
+        db_path=tmp_path / "legacy-risk.db",
+        now_fn=_clock(),
+    )
+    path = tmp_path / "legacy.json"
+    path.write_text(
+        json.dumps(
+            {
+                "last_bar_time": "2024-01-08T10:00:00",
+                "positions": {"99": PositionInfo(
+                    99, "XAUUSD", "buy", 0.01, 2000.0, 1990.0, 2020.0, 234000
+                ).to_dict()},
+            }
+        ),
+        encoding="utf-8",
+    )
+    loaded = TradeExecutor(
+        broker, risk, make_config(), sizer=SmallSizer(), local_state_file=path
+    )
+    assert loaded.get_trade_meta(99) == {}
+    assert loaded.reference_equity == pytest.approx(EQUITY)

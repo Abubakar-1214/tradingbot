@@ -122,26 +122,30 @@ this repo's `.venv` (including `backtesting==0.6.2`, `python-dotenv`,
 
 Copy `.env.example` → `.env` and edit. `core/config.py` loads `.env` via
 python-dotenv and **validates every value**; invalid values raise at startup.
-Every environment variable (49 documented keys) is documented in
-`.env.example`:
+Every supported environment variable is documented in `.env.example`:
 
 - `TRADING_MODE` — `demo` (default) or `live`. Live **refuses to start** unless
-  every gate passes (feature contract present, model present, risk state
-  loadable, reconciliation passed, MT5 credentials configured).
+  every gate passes (risk state loadable, promoted model when model signals are
+  selected, and MT5 credentials configured).
 - `SIGNAL_SOURCE` — `rule` (default: causal SMA fast/slow crossover, no model
-  needed) or `ppo` (requires `MODEL_PATH` + `FEATURE_CONTRACT_PATH`).
+  needed) or `model` (policy manifest); `ppo` remains an alias for `model`.
+- `MODEL_MANIFEST`, `LIVE_HISTORY_BARS`, and optional `MACRO_CSV` configure live
+  model inference. `REQUIRE_PROMOTED_MODEL` controls demo-mode promotion gates.
+- Decision and trade-management controls include confidence/agreement filters,
+  UTC session hours, loss cooldown, Kelly scaling, breakeven/trailing stops,
+  partial closes, and a bar-based time stop.
 - Risk circuit breakers — `MAX_DAILY_LOSS`, `MAX_DRAWDOWN`,
   `MAX_CONSECUTIVE_LOSSES`, `MAX_RISK_PER_TRADE`, `MAX_POSITION`,
   `MAX_TRADES_PER_DAY`, `MIN_TRADE_INTERVAL_SEC`, `VOL_THRESHOLD`,
   `MAX_SPREAD`, `MARKET_HOURS_ONLY`, `CORRELATION_GUARD_ENABLED`.
 - Cost model — `COST_SPREAD`, `COST_COMMISSION`, `COST_SLIPPAGE`, swap rates.
 - MT5 — `MT5_LOGIN`, `MT5_PASSWORD`, `MT5_SERVER`, `MT5_MAGIC`,
-  `MT5_DEVIATION`, `SL_ATR_MULT`, `TP_ATR_MULT`, `MAX_REQUOTE_RETRIES`.
+  `MT5_DEVIATION`, `BROKER_UTC_OFFSET_HOURS`, `SL_ATR_MULT`,
+  `TP_ATR_MULT`, `MAX_REQUOTE_RETRIES`.
 
-> ⚠️ The default `MODEL_PATH=train/ppo_xauusd_latest.zip` and
-> `FEATURE_CONTRACT_PATH=train/feature_contract.json` do **not exist** in this
-> repo. The `rule` signal source runs standalone; the `ppo` source raises a
-> clear error when the model is missing (never silently flat).
+> ⚠️ The default production manifest does **not exist** in this repo. The `rule`
+> signal source runs standalone; `model`/`ppo` requires a valid model artifact
+> and evaluation record and never silently falls back to flat.
 
 ---
 
@@ -283,12 +287,15 @@ results in its absence.
 - `TRADING_MODE=demo` (default) — trades only against MockBroker, never sends a
   real order. Smoke: `python live/live_trade_mt5.py --smoke --max-bars 300`.
 - `TRADING_MODE=live` — **refuses to start** unless every gate passes:
-  feature contract present + model present (for `SIGNAL_SOURCE=ppo`) + risk
-  state loadable + MT5 credentials configured.
+  a promoted model artifact (for `SIGNAL_SOURCE=model` or `ppo`) + risk state
+  loadable + MT5 credentials configured.
 - Candle-close-aligned loop (one decision per NEW closed candle — no 10s spam).
 - SL/TP (ATR-based) attached to every order; MT5 retcode handling with bounded
   REQUOTE retry; idempotency guard persisted across restarts; startup
   broker-vs-local reconciliation (halt on drift); kill-switch file check.
+- Broker bar times are converted to UTC using `BROKER_UTC_OFFSET_HOURS`.
+- Export H1 history on a Windows MT5 host with
+  `python scripts/export_mt5_history.py --from 2018-01-01 --to 2024-01-01`.
 - Structured rotating logging to `logs/`.
 
 > ⚠️ Final live verification requires the user's own MT5 terminal. Demo-mode

@@ -20,7 +20,7 @@ Guarantees (verified by the ``--smoke`` demo run):
     MockBroker and can never send a real order.
   * live mode refuses to start unless its gates pass (risk state loadable,
     MT5 credentials present, startup reconciliation clean, and — for the ML
-    signal source — feature contract + model checkpoint present).
+    signal source — a promoted artifact with a matching evaluation record).
   * No hard-coded volume anywhere: every order is sized by the ATRPositionSizer
     as an explicit equity fraction, floored to the broker lot step and capped
     by ``max_position`` (aggregate notional cap enforced by TradeExecutor).
@@ -50,6 +50,7 @@ Run (live — after all gates pass)::
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import logging.handlers
 import math
@@ -66,17 +67,22 @@ import pandas as pd
 # put the repo root on sys.path so ``core`` / ``live`` / ``models`` resolve.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from core.config import (  # noqa: E402
+from core.config import (
     AppConfig,
     TradingMode,
     load_config,
 )
-from live.broker import BaseBroker, BrokerError, PositionInfo  # noqa: E402
-from live.mock_broker import MockBroker  # noqa: E402
-from live.mt5_broker import Mt5Broker  # noqa: E402
-from live.trade_executor import TradeExecutor  # noqa: E402
-from models.position_sizing import ATRPositionSizer  # noqa: E402
-from models.risk_supervisor import RiskSupervisor  # noqa: E402
+from core.model_artifacts import ModelArtifactError, load_manifest
+from core.observation import AccountState
+from live.broker import BaseBroker, BrokerError, PositionInfo
+from live.decision_engine import Decision, DecisionEngine
+from live.mock_broker import MockBroker
+from live.model_signal import ModelSignalSource
+from live.mt5_broker import Mt5Broker
+from live.trade_executor import TradeExecutor
+from live.trade_manager import Close, ModifySL, PartialClose, TradeManager
+from models.position_sizing import ATRPositionSizer, KellyPositionSizer
+from models.risk_supervisor import RiskSupervisor
 
 logger = logging.getLogger("live_trader")
 
@@ -91,9 +97,9 @@ _DEMO_BALANCE = 100_000.0
 # Signal sources
 # --------------------------------------------------------------------------- #
 class SignalSource(Protocol):
-    """A causal signal generator: returns 0 (flat), 1 (long), 2 (short)."""
+    def decide(self, df: pd.DataFrame | None, account: AccountState) -> Decision: ...
 
-    def signal(self, df: pd.DataFrame, position_side: int) -> int: ...
+    def executed(self, action: int) -> None: ...
 
 
 class RuleSignalSource:
@@ -126,75 +132,23 @@ class RuleSignalSource:
             return 2
         return 0
 
+    def decide(
+        self, df: pd.DataFrame | None, account: AccountState
+    ) -> Decision:
+        action = self.signal(df, account.position)
+        if action == 0:
+            return Decision(0, 1.0, 1.0, "NO_SIGNAL", {"hold": True})
+        return Decision(action, 1.0, 1.0, "RULE_SIGNAL")
 
-class PpoSignalSource:
-    """ML signal source backed by the trained PPO checkpoint.
-
-    Loads the checkpoint lazily; raises a clear error when the model file is
-    missing so the operator can never mistake a missing model for a flat
-    signal.  Feature preprocessing follows the saved feature contract
-    (core/feature_pipeline.build_feature_frame) — the same causal, contract-
-    enforced pipeline used by training and backtesting (P0-3 fix).
-    """
-
-    def __init__(self, cfg: AppConfig) -> None:
-        self.cfg = cfg
-        self._model = None
-        self._contract = None
-
-    def _ensure_loaded(self) -> None:
-        if self._model is not None:
-            return
-        model_path = self.cfg.paths.model_path
-        contract_path = self.cfg.paths.feature_contract_path
-        if not model_path.exists():
-            raise FileNotFoundError(
-                f"PPO checkpoint not found at {model_path}. Train a model or "
-                f"switch SIGNAL_SOURCE=rule."
-            )
-        if not contract_path.exists():
-            raise FileNotFoundError(
-                f"Feature contract not found at {contract_path}. Run the "
-                f"feature pipeline first (P0-3: feature schema must be "
-                f"enforced at load time)."
-            )
-        try:
-            from stable_baselines3 import PPO  # type: ignore
-            self._model = PPO.load(str(model_path))
-        except Exception as e:  # pragma: no cover - terminal-machine only
-            raise RuntimeError(f"Failed to load PPO checkpoint {model_path}: {e}") from e
-        try:
-            import json
-            self._contract = json.loads(contract_path.read_text(encoding="utf-8"))
-        except Exception as e:  # pragma: no cover
-            raise RuntimeError(f"Failed to load feature contract {contract_path}: {e}") from e
-
-    def signal(self, df: Optional[pd.DataFrame], position_side: int = 0) -> int:
-        self._ensure_loaded()
-        if df is None or len(df) < CLOSED_BAR_WARMUP:
-            return 0
-        from core.feature_pipeline import build_feature_frame, validate_contract_features
-        feats = build_feature_frame(
-            df,
-            higher_timeframes=self.cfg.feature.higher_timeframes,
-            macro_shift=self.cfg.feature.macro_shift,
-        )
-        validate_contract_features(list(feats.columns), self._contract)
-        obs = feats.tail(self.cfg.feature.window).to_numpy(dtype="float32").reshape(1, -1)
-        action, _ = self._model.predict(obs, deterministic=True)
-        return int(action)
+    def executed(self, action: int) -> None:
+        return None
 
 
 def build_signal_source(cfg: AppConfig) -> SignalSource:
-    """Build the configured signal source (SIGNAL_SOURCE=rule|ppo)."""
-    kind = cfg.raw.get("SIGNAL_SOURCE", "rule").strip().lower()
-    if kind == "ppo":
-        return PpoSignalSource(cfg)
-    if kind == "rule":
-        return RuleSignalSource()
-    raise ValueError(
-        f"SIGNAL_SOURCE must be 'rule' or 'ppo', got {kind!r}"
-    )
+    """Build the configured rule or model source."""
+    if cfg.model.signal_source == "model":
+        return ModelSignalSource(cfg)
+    return RuleSignalSource()
 
 
 # --------------------------------------------------------------------------- #
@@ -214,10 +168,17 @@ class Mt5BarSource:
     stack (backtesting engine, feature pipeline, executor) sees one schema.
     """
 
-    def __init__(self, mt5_module, symbol: str, timeframe: str) -> None:
+    def __init__(
+        self,
+        mt5_module,
+        symbol: str,
+        timeframe: str,
+        utc_offset_hours: float = 0.0,
+    ) -> None:
         self._mt5 = mt5_module
         self.symbol = symbol
         self.timeframe = timeframe.upper()
+        self.utc_offset_hours = float(utc_offset_hours)
 
     def last_closed_bars(self, n: int) -> pd.DataFrame:
         tf = getattr(self._mt5, f"TIMEFRAME_{self.timeframe}", None)
@@ -231,7 +192,10 @@ class Mt5BarSource:
         if df.empty:
             return df
         df = df.rename(columns={"tick_volume": "volume"})
-        df["time"] = pd.to_datetime(df["time"], unit="s", utc=True)
+        df["time"] = (
+            pd.to_datetime(df["time"], unit="s", utc=True)
+            - pd.to_timedelta(self.utc_offset_hours, unit="h")
+        )
         return df
 
 
@@ -310,11 +274,17 @@ class LiveTrader:
         cfg: AppConfig,
         broker: BaseBroker,
         signal_source: SignalSource,
-        warmup_bars: int = CLOSED_BAR_WARMUP,
+        warmup_bars: int | None = None,
     ) -> None:
         self.cfg = cfg
         self.broker = broker
         self.signal_source = signal_source
+        if warmup_bars is None:
+            warmup_bars = (
+                max(CLOSED_BAR_WARMUP, cfg.model.live_history_bars)
+                if cfg.model.signal_source == "model"
+                else CLOSED_BAR_WARMUP
+            )
         self.warmup_bars = int(warmup_bars)
 
         now_fn = lambda: datetime.now(timezone.utc)  # noqa: E731
@@ -333,6 +303,15 @@ class LiveTrader:
             ),
             local_state_file=cfg.paths.local_state_file,
         )
+        self.decision_engine = DecisionEngine(
+            cfg.behavior,
+            kelly=KellyPositionSizer(
+                max_position=1.0,
+                kelly_fraction=cfg.behavior.kelly_fraction,
+            ),
+            risk_per_trade=cfg.risk.risk_per_trade,
+        )
+        self.trade_manager = TradeManager(cfg)
         # Live mode: unknown broker positions are closed, phantom local state
         # is dropped, and the executor halts on any drift (audit P0-6).
         self.executor.close_on_recon_drift = cfg.trading_mode is TradingMode.LIVE
@@ -368,17 +347,18 @@ class LiveTrader:
         except BrokerError:
             return self.risk.current_equity
 
+    def _current_balance(self) -> float:
+        try:
+            return float(self.broker.account_info().balance)
+        except BrokerError:
+            return self.risk.current_equity
+
     def on_closed_bar(
         self,
         df: Optional[pd.DataFrame],
         bar_time: Optional[str] = None,
     ) -> List[Dict[str, object]]:
-        """Handle ONE closed candle: entry / scale / close decisions.
-
-        Every order path flows through TradeExecutor which consults the
-        RiskSupervisor BEFORE the broker is touched and attaches ATR-based
-        SL/TP to every order.  Returns the list of events logged this bar.
-        """
+        """Handle one closed candle in the fixed safety-to-decision order."""
         events: List[Dict[str, object]] = []
         if self._kill_switch_triggered():
             events.append({"event": "KILL_SWITCH"})
@@ -386,64 +366,262 @@ class LiveTrader:
         if self.executor.halted:
             events.append({"event": "HALTED", "reason": self.executor.halt_reason})
             return events
+        if df is None or df.empty:
+            events.append({"event": "NO_BARS"})
+            return events
+
+        if bar_time is None:
+            bar_time = str(df.iloc[-1]["time"])
+        now_utc = self._bar_time_utc(bar_time)
+        self.executor.advance_closed_bar()
+        self._feed_closed_bar_to_broker(df)
+        self._manage_open_positions(df, bar_time, events)
 
         equity = self._current_equity()
-        tick = self.broker.get_tick(self.cfg.broker.symbol)
-        md = self.executor.build_market_data(df, tick)
-
-        positions: List[PositionInfo] = self.broker.get_positions(
+        positions: list[PositionInfo] = self.broker.get_positions(
             self.cfg.broker.symbol, self.cfg.broker.magic
         )
-        pos_side = 0
-        if positions:
-            pos_side = 1 if positions[0].side == "buy" else 2
-
-        sig = self.signal_source.signal(df, pos_side)
-
-        if sig == 0:
-            events.append({"event": "HOLD" if pos_side else "NO_SIGNAL",
-                           "equity": equity})
-            return events
-        if sig == pos_side:
-            events.append({"event": "HOLD", "signal": sig, "equity": equity})
-            return events
-
-        # Opposite (or new) signal.
-        if pos_side != 0 and sig != pos_side:
-            # Close existing exposure first (RiskSupervisor consulted; a
-            # rejection is logged but never blocks the close — de-risking).
-            for pos in positions:
-                eq_before = self._current_equity()
-                ok, reason, res = self.executor.execute_close(
-                    pos.ticket, equity=eq_before
-                )
-                eq_after = self._current_equity()
-                pnl = eq_after - eq_before
-                events.append({
-                    "event": "CLOSE", "ticket": pos.ticket, "ok": ok,
-                    "reason": reason, "pnl": pnl,
-                })
-                logger.info("CLOSE ticket=%s ok=%s pnl=%.2f reason=%s",
-                            pos.ticket, ok, pnl, reason)
-                if ok:
-                    self.executor.update_risk_after_close(pnl, eq_after, pnl > 0.0)
-                else:
-                    logger.warning("Close failed ticket=%s reason=%s", pos.ticket, reason)
-
-        # Enter on the new signal (short is gated by ALLOW_SHORT inside the
-        # executor; sizing and SL/TP flow through RiskSupervisor + sizer).
-        ok, reason, res = self.executor.execute_entry(
-            sig, equity=equity, df=df, market_data=md, bar_time=bar_time
+        position_side = self._action_side(positions)
+        account = self._account_state(positions, equity)
+        raw = self.signal_source.decide(df, account)
+        decision = self.decision_engine.filter(
+            raw,
+            now_utc,
+            position_side,
+            self.executor.bars_since_last_loss,
+            self.risk.trade_history,
         )
-        events.append({
-            "event": "ENTRY", "signal": sig, "ok": ok, "reason": reason,
-            "ticket": res.ticket if res else None,
-            "volume": res.volume_filled if res else None,
-            "fill_price": res.fill_price if res else None,
-        })
-        logger.info("ENTRY signal=%s ok=%s reason=%s ticket=%s",
-                    sig, ok, reason, res.ticket if res else None)
+        if decision.action == 2 and not self.cfg.broker.allow_short:
+            decision = Decision(
+                0, decision.confidence, 0.0, "SHORT_DISABLED", decision.info
+            )
+
+        if decision.action == position_side:
+            events.append({
+                "event": "HOLD" if position_side else "NO_SIGNAL",
+                "reason": decision.reason,
+                "action": decision.action,
+                "equity": equity,
+            })
+        else:
+            if positions:
+                close_reason = (
+                    "MODEL_EXIT"
+                    if decision.action == 0
+                    and self.cfg.model.signal_source == "model"
+                    else "SIGNAL_REVERSAL"
+                )
+                for pos in positions:
+                    self._close_position(pos, close_reason, events)
+
+            if decision.action != 0:
+                remaining = self.broker.get_positions(
+                    self.cfg.broker.symbol, self.cfg.broker.magic
+                )
+                if not remaining:
+                    tick = self.broker.get_tick(self.cfg.broker.symbol)
+                    md = self.executor.build_market_data(df, tick)
+                    ok, reason, result = self.executor.execute_entry(
+                        decision.action,
+                        equity=self._current_equity(),
+                        df=df,
+                        market_data=md,
+                        bar_time=bar_time,
+                        size_multiplier=decision.size_multiplier,
+                    )
+                    events.append({
+                        "event": "ENTRY",
+                        "signal": decision.action,
+                        "reason": decision.reason,
+                        "ok": ok,
+                        "executor_reason": reason,
+                        "ticket": result.ticket if result else None,
+                        "volume": result.volume_filled if result else None,
+                        "fill_price": result.fill_price if result else None,
+                    })
+                    logger.info(
+                        "ENTRY action=%s ok=%s reason=%s ticket=%s",
+                        decision.action,
+                        ok,
+                        reason,
+                        result.ticket if result else None,
+                    )
+
+        final_positions = self.broker.get_positions(
+            self.cfg.broker.symbol, self.cfg.broker.magic
+        )
+        self.signal_source.executed(self._action_side(final_positions))
+        self.executor._save_local_state()
         return events
+
+    @staticmethod
+    def _bar_time_utc(bar_time: str) -> datetime:
+        timestamp = pd.Timestamp(bar_time)
+        if timestamp.tzinfo is None:
+            timestamp = timestamp.tz_localize(timezone.utc)
+        return timestamp.to_pydatetime().astimezone(timezone.utc)
+
+    @staticmethod
+    def _action_side(positions: list[PositionInfo]) -> int:
+        if not positions:
+            return 0
+        return 1 if positions[0].side == "buy" else 2
+
+    def _account_state(
+        self, positions: list[PositionInfo], equity: float
+    ) -> AccountState:
+        tick = self.broker.get_tick(self.cfg.broker.symbol)
+        trade_pnl = 0.0
+        bars_in_trade = 0
+        for position in positions:
+            side = 1.0 if position.side == "buy" else -1.0
+            price = tick["bid"] if side > 0 else tick["ask"]
+            price_return = (
+                (price - position.open_price) / position.open_price * side
+            )
+            meta = self.executor.get_trade_meta(position.ticket)
+            entry_equity = float(
+                meta.get("entry_equity", self.executor.reference_equity or equity)
+            )
+            trade_pnl += (
+                price_return
+                * position.open_price
+                * position.volume
+                * 100.0
+                / max(entry_equity, 1e-9)
+            )
+            bars_in_trade = max(
+                bars_in_trade, int(meta.get("bars_held", 0))
+            )
+        peak = max(float(self.risk.peak_equity), float(equity))
+        drawdown = max(0.0, (peak - equity) / peak) if peak > 0 else 0.0
+        reference = self.executor.reference_equity or equity
+        return AccountState(
+            position=(
+                1 if positions and positions[0].side == "buy"
+                else -1 if positions else 0
+            ),
+            trade_pnl=trade_pnl,
+            bars_in_trade=bars_in_trade,
+            drawdown=drawdown,
+            equity_ratio=equity / reference if reference > 0 else 1.0,
+        )
+
+    def _manage_open_positions(
+        self,
+        df: pd.DataFrame,
+        bar_time: str,
+        events: list[dict[str, object]],
+    ) -> None:
+        positions = self.broker.get_positions(
+            self.cfg.broker.symbol, self.cfg.broker.magic
+        )
+        if not positions:
+            return
+        atr_now = self.executor.compute_atr(df)
+        last_bar = df.iloc[-1]
+        for position in positions:
+            meta = self.executor.get_trade_meta(position.ticket)
+            meta.setdefault("initial_sl", position.sl)
+            meta.setdefault("entry_atr", atr_now)
+            meta.setdefault("partial_done", False)
+            meta.setdefault("open_bar_time", bar_time)
+            meta["bars_held"] = int(meta.get("bars_held", 0)) + 1
+            self.executor.set_trade_meta(position.ticket, meta)
+            actions = self.trade_manager.manage(
+                position,
+                float(meta.get("entry_atr", atr_now)),
+                int(meta["bars_held"]),
+                last_bar,
+                atr_now,
+                meta,
+            )
+            for action in actions:
+                if isinstance(action, ModifySL):
+                    ok, reason, _ = self.executor.modify_sl_tp(
+                        action.ticket, action.sl, position.tp
+                    )
+                    events.append({
+                        "event": "MODIFY_SL",
+                        "ticket": action.ticket,
+                        "sl": action.sl,
+                        "ok": ok,
+                        "reason": reason,
+                    })
+                elif isinstance(action, PartialClose):
+                    self._partial_close(action, meta, events)
+                elif isinstance(action, Close):
+                    current = self._position_by_ticket(action.ticket)
+                    if current is not None:
+                        self._close_position(current, action.reason, events)
+
+    def _position_by_ticket(self, ticket: int) -> PositionInfo | None:
+        return next(
+            (
+                position
+                for position in self.broker.get_positions(
+                    self.cfg.broker.symbol, self.cfg.broker.magic
+                )
+                if position.ticket == ticket
+            ),
+            None,
+        )
+
+    def _close_position(
+        self,
+        position: PositionInfo,
+        close_reason: str,
+        events: list[dict[str, object]],
+    ) -> bool:
+        meta = self.executor.get_trade_meta(position.ticket)
+        balance_before = self._current_balance()
+        ok, reason, _ = self.executor.execute_close(
+            position.ticket, equity=self._current_equity()
+        )
+        equity_after = self._current_equity()
+        entry_balance = float(meta.get("entry_balance", balance_before))
+        pnl = self._current_balance() - entry_balance if ok else 0.0
+        events.append({
+            "event": "CLOSE",
+            "ticket": position.ticket,
+            "ok": ok,
+            "reason": close_reason,
+            "executor_reason": reason,
+            "pnl": pnl,
+        })
+        if ok:
+            self.executor.update_risk_after_close(pnl, equity_after, pnl > 0.0)
+        return ok
+
+    def _partial_close(
+        self,
+        action: PartialClose,
+        meta: dict,
+        events: list[dict[str, object]],
+    ) -> None:
+        balance_before = self._current_balance()
+        ok, reason, _ = self.executor.execute_close(
+            action.ticket,
+            volume=action.volume,
+            equity=self._current_equity(),
+        )
+        equity_after = self._current_equity()
+        entry_balance = float(meta.get("entry_balance", balance_before))
+        balance_after = self._current_balance()
+        pnl = balance_after - entry_balance if ok else 0.0
+        if ok:
+            meta["partial_done"] = True
+            meta["entry_balance"] = balance_after
+            self.executor.set_trade_meta(action.ticket, meta)
+            self.executor.update_risk_after_close(pnl, equity_after, pnl > 0.0)
+        events.append({
+            "event": "PARTIAL_CLOSE",
+            "ticket": action.ticket,
+            "volume": action.volume,
+            "ok": ok,
+            "reason": reason,
+            "pnl": pnl,
+        })
 
     def _feed_closed_bar_to_broker(self, df: pd.DataFrame) -> List[dict]:
         """Evaluate the newly closed bar against open SL/TP (demo broker).
@@ -455,21 +633,42 @@ class LiveTrader:
         needs no such feed — the terminal executes SL/TP server-side — so
         this is a no-op there.
         """
-        advance = getattr(self.broker, "advance", None)
-        if advance is None or df is None or len(df) == 0:
+        if df is None or len(df) == 0:
             return []
-        row = df.iloc[-1]
-        eq_before = self._current_equity()
-        fills = advance(float(row["high"]), float(row["low"]), float(row["close"]))
+        local_tickets = set(self.executor._positions)
+        local_meta = {
+            ticket: self.executor.get_trade_meta(ticket) for ticket in local_tickets
+        }
+        balance_before = self._current_balance()
+        advance = getattr(self.broker, "advance", None)
+        fills = []
+        if advance is not None:
+            row = df.iloc[-1]
+            fills = advance(
+                float(row["high"]), float(row["low"]), float(row["close"])
+            )
         eq_after = self._current_equity()
+        balance_after = self._current_balance()
         for f in fills:
             logger.info("SL/TP fill ticket=%s reason=%s pnl=%.2f",
                         f.get("ticket"), f.get("reason"), float(f.get("pnl", 0.0)))
-        # Sync local state (broker may have closed positions) and feed the
-        # REAL aggregate realized PnL to the risk supervisor.
-        if fills:
-            self.executor.reconcile_positions()
-            pnl = eq_after - eq_before
+        self.executor.reconcile_positions()
+        active_tickets = {
+            position.ticket
+            for position in self.broker.get_positions(
+                self.cfg.broker.symbol, self.cfg.broker.magic
+            )
+        }
+        closed_tickets = local_tickets - active_tickets
+        if fills or closed_tickets:
+            if fills:
+                pnl = balance_after - balance_before
+            else:
+                entry_balances = [
+                    float(local_meta[ticket].get("entry_balance", balance_before))
+                    for ticket in closed_tickets
+                ]
+                pnl = balance_after - min(entry_balances)
             if abs(pnl) > 1e-9:
                 self.executor.update_risk_after_close(pnl, eq_after, pnl > 0.0)
         return fills
@@ -516,7 +715,6 @@ class LiveTrader:
             last_closed = closed_time
             df = bars.iloc[-self.warmup_bars:].reset_index(drop=True)
             try:
-                self._feed_closed_bar_to_broker(df)
                 self.on_closed_bar(df, bar_time=str(closed_time))
                 processed += 1
                 if max_bars > 0 and processed >= max_bars:
@@ -524,6 +722,8 @@ class LiveTrader:
                     return processed
             except Exception:
                 logger.exception("on_closed_bar failed for bar %s", closed_time)
+                if max_bars > 0:
+                    raise
             time.sleep(poll_seconds)
 
 
@@ -552,13 +752,67 @@ def _setup_logging(cfg: AppConfig) -> None:
     root.addHandler(ch)
 
 
-def _build_broker(cfg: AppConfig) -> BaseBroker:
+def model_promotion_failures(cfg: AppConfig) -> list[str]:
+    manifest = None
+    failures: list[str] = []
+    try:
+        manifest = load_manifest(cfg.model.manifest_path)
+    except ModelArtifactError as exc:
+        failures.append(f"model manifest could not be loaded: {exc}")
+    evaluation_path = Path(cfg.model.manifest_path).parent / "evaluation.json"
+    try:
+        evaluation = json.loads(evaluation_path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        failures.append(f"evaluation file missing: {evaluation_path}")
+    except (OSError, ValueError) as exc:
+        failures.append(f"evaluation file could not be loaded: {exc}")
+    else:
+        if not isinstance(evaluation, dict):
+            failures.append("evaluation file must contain a JSON object")
+            return failures
+        if evaluation.get("passed") is not True:
+            failures.append("evaluation passed is not true")
+        if (
+            manifest is not None
+            and evaluation.get("contract_hash") != manifest.contract_hash
+        ):
+            failures.append(
+                "evaluation contract_hash does not match the model manifest"
+            )
+    return failures
+
+
+def enforce_model_promotion_gate(cfg: AppConfig) -> None:
+    if cfg.model.signal_source != "model":
+        return
+    failures = model_promotion_failures(cfg)
+    if not failures:
+        return
+    if (
+        cfg.trading_mode is TradingMode.LIVE
+        or cfg.behavior.require_promoted_model
+    ):
+        raise RuntimeError(
+            "Model promotion gate refused to start. Failed gates: "
+            + "; ".join(failures)
+        )
+    logger.warning(
+        "Model promotion gate warning (demo mode): %s",
+        "; ".join(failures),
+    )
+
+
+def _build_broker(
+    cfg: AppConfig, promotion_checked: bool = False
+) -> BaseBroker:
     """Return the broker for the configured TRADING_MODE.
 
     demo (default) -> MockBroker (deterministic simulated fills, never real)
     live          -> Mt5Broker  (real MetaTrader5 terminal)
     """
     if cfg.trading_mode is TradingMode.DEMO:
+        if not promotion_checked:
+            enforce_model_promotion_gate(cfg)
         logger.info("TRADING_MODE=demo — using MockBroker (no real orders)")
         broker = MockBroker(
             symbol=cfg.broker.symbol,
@@ -573,15 +827,15 @@ def _build_broker(cfg: AppConfig) -> BaseBroker:
         return broker
 
     if cfg.trading_mode is TradingMode.LIVE:
-        # --- live gates (audit P0-7): risk state loadable + MT5 creds + ---
-        # --- (for ML signals) feature contract + model checkpoint        ---
-        failures: List[str] = []
-        risk_state_loadable = True
+        # --- live gates: risk state loadable + MT5 creds + promoted model ---
+        # --- evaluation record (when using model signals)                ---
+        failures: list[str] = []
+        if cfg.model.signal_source == "model":
+            failures.extend(model_promotion_failures(cfg))
         try:
             RiskSupervisor(config=cfg.risk, db_path=cfg.paths.risk_state_db,
                            now_fn=lambda: datetime.now(timezone.utc))
-        except Exception as e:
-            risk_state_loadable = False
+        except Exception as e:  # noqa: BLE001
             failures.append(f"risk state loadable ({e})")
         if cfg.broker.mt5_login is None:
             failures.append("MT5_LOGIN not configured")
@@ -589,11 +843,6 @@ def _build_broker(cfg: AppConfig) -> BaseBroker:
             failures.append("MT5_PASSWORD not configured")
         if cfg.broker.mt5_server is None:
             failures.append("MT5_SERVER not configured")
-        if cfg.raw.get("SIGNAL_SOURCE", "rule").strip().lower() == "ppo":
-            if not cfg.paths.feature_contract_path.exists():
-                failures.append("feature contract present")
-            if not cfg.paths.model_path.exists():
-                failures.append("model present")
         if failures:
             raise RuntimeError(
                 "TRADING_MODE=live REFUSED TO START. Failed gates: "
@@ -644,8 +893,9 @@ def main() -> int:
         logger.error("--smoke refuses to run with TRADING_MODE=live")
         return 3
 
-    broker = _build_broker(cfg)
+    enforce_model_promotion_gate(cfg)
     signal_source = build_signal_source(cfg)
+    broker = _build_broker(cfg, promotion_checked=True)
     trader = LiveTrader(cfg, broker, signal_source)
 
     # Startup reconciliation (P0-6): broker vs local state; halt on drift.
@@ -656,7 +906,11 @@ def main() -> int:
 
     if cfg.trading_mode is TradingMode.LIVE:
         bar_source: BarSource = Mt5BarSource(
-            broker._mt5, cfg.broker.symbol, cfg.timeframe)  # type: ignore[attr-defined]
+            broker._mt5,
+            cfg.broker.symbol,
+            cfg.timeframe,
+            utc_offset_hours=cfg.broker.utc_offset_hours,
+        )  # type: ignore[attr-defined]
         max_bars = 0
     else:
         # Demo: deterministic synthetic closed-bar feed (never real orders).
@@ -677,19 +931,19 @@ def main() -> int:
     if open_positions:
         for pos in open_positions:
             eq_before = trader._current_equity()
-            ok, reason, _ = trader.executor.execute_close(pos.ticket, equity=eq_before)
+            ok, _, _ = trader.executor.execute_close(pos.ticket, equity=eq_before)
             eq_after = trader._current_equity()
             logger.info("Flatten on exit ticket=%s ok=%s pnl=%.2f",
                         pos.ticket, ok, eq_after - eq_before)
-    closed = getattr(broker, "closed_fills", lambda: [])()
+    closed = getattr(broker, "closed_fills", list)()
     logger.info("Smoke summary: bars=%d open_positions=%d fills=%d",
                 processed,
                 len(broker.get_positions(cfg.broker.symbol, cfg.broker.magic)),
                 len(closed))
     try:
         broker.disconnect()
-    except Exception:
-        pass
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Broker disconnect failed: %s", exc)
     return 0
 
 
