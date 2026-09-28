@@ -1,0 +1,1 @@
+call .venv\Scripts\activate.bat && python core\feature_pipeline.py

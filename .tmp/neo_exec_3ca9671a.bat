@@ -1,0 +1,1 @@
+cd e:\Desktop\NeoMind\Bazz\autonoumuse_trader && powershell -Command "Get-ChildItem -Recurse -Include *.zip,*.pt,*.pth,*.onnx,*.pkl,*.safetensors,*.joblib,*.h5 | Where-Object { $_.FullName -notmatch '\\\\.venv\\\\|\\\\archive\\\\|\\\\__pycache__\\\\' } | ForEach-Object { '{0} ({1:N2} MB)' -f $_.FullName.Replace('E:\Desktop\NeoMind\Bazz\autonoumuse_trader\',''), ($_.Length/1MB) }"

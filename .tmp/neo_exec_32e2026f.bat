@@ -1,0 +1,1 @@
+.venv\Scripts\python.exe -m py_compile live\trade_executor.py scripts\verify_risk_integration.py && .venv\Scripts\python.exe scripts\verify_risk_integration.py

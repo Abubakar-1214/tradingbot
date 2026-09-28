@@ -1,0 +1,1 @@
+powershell -Command "Select-String -LiteralPath 'e:\Desktop\NeoMind\Bazz\autonoumuse_trader\data\sentiment_analysis.py' -Pattern '0.0|return|def ' | Select-Object -First 15 LineNumber,Line"

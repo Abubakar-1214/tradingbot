@@ -1,0 +1,56 @@
+command: e:\Desktop\NeoMind\Bazz\autonoumuse_trader\.venv\Scripts\python.exe live/live_trade_mt5.py --smoke --max-bars 300
+exit_code: 0
+duration_sec: 20.3
+--- output ---
+INFO:live_trader:======================================================================
+INFO:live_trader:live_trade_mt5.py starting — TRADING_MODE=demo SYMBOL=XAUUSD TF=H1
+INFO:live_trader:TRADING_MODE=demo — using MockBroker (no real orders)
+INFO:live.mock_broker:MockBroker connected (seed=42, spread=0.00025)
+INFO:models.risk_supervisor:RiskSupervisor initialized (daily_loss=0.1%, dd=0.1%, max_pos=0.1%, max_losses=5, corr_guard=False)
+INFO:models.position_sizing:💰 ATR Position Sizer: 2.0% risk, 2.0x ATR stop
+INFO:live.trade_executor:Startup reconciliation OK (clean)
+INFO:live_trader:Startup reconciliation OK: clean
+INFO:live_trader:Candle-close-aligned loop starting (timeframe=H1, poll=0.05s)
+INFO:live.trade_executor:ENTRY buy ticket=1 vol=0.05 sl=1980.79 tp=1991.74 (risk=APPROVED)
+INFO:live_trader:ENTRY signal=1 ok=True reason=APPROVED ticket=1
+INFO:live_trader:SL/TP fill ticket=1 reason=SL pnl=-0.22
+WARNING:live.trade_executor:Local position 1 no longer on broker — removed from local state
+INFO:live.trade_executor:ENTRY sell ticket=2 vol=0.05 sl=1980.87 tp=1970.15 (risk=APPROVED)
+INFO:live_trader:ENTRY signal=2 ok=True reason=APPROVED ticket=2
+INFO:live_trader:SL/TP fill ticket=2 reason=SL pnl=-0.22
+WARNING:live.trade_executor:Local position 2 no longer on broker — removed from local state
+INFO:live.trade_executor:ENTRY buy ticket=3 vol=0.05 sl=1982.42 tp=1993.87 (risk=APPROVED)
+INFO:live_trader:ENTRY signal=1 ok=True reason=APPROVED ticket=3
+INFO:live_trader:SL/TP fill ticket=3 reason=SL pnl=-0.23
+WARNING:live.trade_executor:Local position 3 no longer on broker — removed from local state
+WARNING:models.risk_supervisor:3 consecutive losses
+INFO:live.trade_executor:ENTRY sell ticket=4 vol=0.05 sl=1971.58 tp=1959.38 (risk=APPROVED)
+INFO:live_trader:ENTRY signal=2 ok=True reason=APPROVED ticket=4
+INFO:live_trader:SL/TP fill ticket=4 reason=TP pnl=0.36
+WARNING:live.trade_executor:Local position 4 no longer on broker — removed from local state
+INFO:live.trade_executor:ENTRY buy ticket=5 vol=0.05 sl=1945.10 tp=1955.47 (risk=APPROVED)
+INFO:live_trader:ENTRY signal=1 ok=True reason=APPROVED ticket=5
+INFO:live_trader:SL/TP fill ticket=5 reason=SL pnl=-0.21
+WARNING:live.trade_executor:Local position 5 no longer on broker — removed from local state
+INFO:live.trade_executor:ENTRY sell ticket=6 vol=0.05 sl=1950.41 tp=1939.41 (risk=APPROVED)
+INFO:live_trader:ENTRY signal=2 ok=True reason=APPROVED ticket=6
+INFO:live_trader:SL/TP fill ticket=6 reason=TP pnl=0.33
+WARNING:live.trade_executor:Local position 6 no longer on broker — removed from local state
+INFO:live.trade_executor:ENTRY buy ticket=7 vol=0.05 sl=1949.43 tp=1960.63 (risk=APPROVED)
+INFO:live_trader:ENTRY signal=1 ok=True reason=APPROVED ticket=7
+INFO:live_trader:SL/TP fill ticket=7 reason=SL pnl=-0.23
+WARNING:live.trade_executor:Local position 7 no longer on broker — removed from local state
+INFO:live.trade_executor:ENTRY sell ticket=8 vol=0.05 sl=1950.86 tp=1938.86 (risk=APPROVED)
+INFO:live_trader:ENTRY signal=2 ok=True reason=APPROVED ticket=8
+INFO:live_trader:SL/TP fill ticket=8 reason=TP pnl=0.36
+WARNING:live.trade_executor:Local position 8 no longer on broker — removed from local state
+INFO:live.trade_executor:ENTRY buy ticket=9 vol=0.05 sl=1957.13 tp=1968.08 (risk=APPROVED)
+INFO:live_trader:ENTRY signal=1 ok=True reason=APPROVED ticket=9
+INFO:live_trader:SL/TP fill ticket=9 reason=SL pnl=-0.22
+WARNING:live.trade_executor:Local position 9 no longer on broker — removed from local state
+INFO:live.trade_executor:ENTRY sell ticket=10 vol=0.05 sl=1954.39 tp=1941.33 (risk=APPROVED)
+INFO:live_trader:ENTRY signal=2 ok=True reason=APPROVED ticket=10
+INFO:live_trader:Reached smoke bar limit (300) — stopping
+INFO:live_trader:Flatten on exit ticket=10 ok=True pnl=0.25
+INFO:live_trader:Smoke summary: bars=300 open_positions=0 fills=10
+

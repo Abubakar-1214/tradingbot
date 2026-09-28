@@ -1,0 +1,1 @@
+ls -la "/app/e:\Desktop\NeoMind\Bazz\autonoumuse_trader" 2>/dev/null | head -60

@@ -1,0 +1,1 @@
+powershell -Command "@('backtest','core','models','features','tests','scripts','archive','artifacts') | ForEach-Object { $d = Join-Path 'e:\Desktop\NeoMind\Bazz\autonoumuse_trader' $_; Write-Output ('== ' + $_ + ' =='); Get-ChildItem -LiteralPath $d -File -Name | Sort-Object }"

@@ -1,0 +1,1 @@
+cd "e:\Desktop\NeoMind\Bazz\autonoumuse_trader" && dir /b docs plans research reports 2>nul

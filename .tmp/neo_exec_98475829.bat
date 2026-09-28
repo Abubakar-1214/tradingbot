@@ -1,0 +1,1 @@
+powershell -Command "Get-ChildItem -LiteralPath 'e:\Desktop\NeoMind\Bazz\autonoumuse_trader\data' -Filter *.csv | ForEach-Object { $n=0; $r=Get-Content -LiteralPath $_.FullName -TotalCount 1; $n=(Get-Content -LiteralPath $_.FullName | Measure-Object -Line).Lines; Write-Output ($_.Name + ' rows=' + $n) }"

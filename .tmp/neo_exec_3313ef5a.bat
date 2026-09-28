@@ -1,0 +1,1 @@
+call .venv\Scripts\activate.bat && python -m py_compile core\config.py && python core\config.py

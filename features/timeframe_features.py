@@ -80,8 +80,13 @@ def compute_timeframe_features(df, tf_name):
     # ========== VOLUME & SUPPORT/RESISTANCE (3) ==========
 
     # 14. Volume ratio (current / 20-period average)
-    avg_volume = df['volume'].rolling(20).mean()
-    result[f'{tf_name}_volume_ratio'] = df['volume'] / avg_volume
+    # MT5 supplies tick_volume, CSVs supply volume - handle BOTH (P1 fix).
+    vol_col = 'volume' if 'volume' in df.columns else ('tick_volume' if 'tick_volume' in df.columns else None)
+    if vol_col is not None:
+        avg_volume = df[vol_col].rolling(20).mean()
+        result[f'{tf_name}_volume_ratio'] = df[vol_col] / avg_volume
+    else:
+        result[f'{tf_name}_volume_ratio'] = 1.0
 
     # 15. Distance to recent high (50-period)
     recent_high = df['high'].rolling(50).max()
@@ -196,10 +201,13 @@ def load_timeframe_data(filepath):
     df = df.sort_index()
 
     # Ensure we have required columns
-    required = ['open', 'high', 'low', 'close', 'volume']
+    required = ['open', 'high', 'low', 'close']
     for col in required:
         if col not in df.columns:
             raise ValueError(f"Missing required column: {col}")
+    # Accept EITHER 'volume' (CSV) or 'tick_volume' (MT5) - P1 fix.
+    if 'volume' not in df.columns and 'tick_volume' not in df.columns:
+        raise ValueError("Missing volume column: need 'volume' or 'tick_volume'")
 
     return df
 

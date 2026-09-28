@@ -1,0 +1,1 @@
+call .venv\Scripts\activate.bat && python scripts\_patch_live_bootstrap.py && python -m py_compile live\live_trade_mt5.py && echo COMPILE_OK && python scripts\_run_live_smoke.py

@@ -1,0 +1,1 @@
+.venv\Scripts\python.exe scripts\_patch_mock_broker.py && .venv\Scripts\python.exe scripts\verify_broker.py

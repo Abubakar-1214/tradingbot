@@ -1,0 +1,1 @@
+powershell -Command "if(Test-Path 'research\recon_notes.md'){ 'RECON_EXISTS ' + (Get-Item 'research\recon_notes.md').Length } else { 'RECON_MISSING' }"

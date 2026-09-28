@@ -1,0 +1,1 @@
+powershell -Command "$r='e:\Desktop\NeoMind\Bazz\autonoumuse_trader'; $f=Join-Path $r 'features\calendar_features.py'; if(Test-Path -LiteralPath $f){$c=Get-Content -LiteralPath $f; '__LINES__ '+$c.Count; ($c | Select-String -Pattern 'searchsorted|np.searchsorted' | Select-Object -First 4) | ForEach-Object { $_.LineNumber.ToString() + ' ' + $_.Line.Trim() }}else{'__NOFILE__'}"

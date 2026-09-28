@@ -1,0 +1,1 @@
+powershell -Command "$r='e:\Desktop\NeoMind\Bazz\autonoumuse_trader'; $f=Join-Path $r 'eval\crisis_validation.py'; if(Test-Path -LiteralPath $f){$c=Get-Content -LiteralPath $f; '__LINES__ '+$c.Count; ($c | Select-String -Pattern 'MockAgent|placeholder|randn|random' | Select-Object -First 6) | ForEach-Object { $_.LineNumber.ToString() + ' ' + $_.Line.Trim() }}else{'__NOFILE__'}"

@@ -1,0 +1,1 @@
+powershell -Command "$r='e:\Desktop\NeoMind\Bazz\autonoumuse_trader'; Select-String -Path (Join-Path $r 'core\config.py'),(Join-Path $r 'live\*.py') -Pattern 'def check_live_gates|def load_config|TRADING_MODE' | Select-Object -First 10 | ForEach-Object { $_.Filename + ':' + $_.LineNumber + ' ' + $_.Line.Trim() }"

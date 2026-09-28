@@ -1,0 +1,1 @@
+powershell -Command "Test-Path 'e:\Desktop\NeoMind\Bazz\autonoumuse_trader\.env'; Test-Path 'e:\Desktop\NeoMind\Bazz\autonoumuse_trader\state'; Test-Path 'e:\Desktop\NeoMind\Bazz\autonoumuse_trader\logs'"

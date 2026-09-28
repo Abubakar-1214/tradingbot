@@ -1,0 +1,1 @@
+.venv\Scripts\python.exe scripts\_patch_verify_bt.py

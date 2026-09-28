@@ -1,0 +1,1 @@
+cd e:\Desktop\NeoMind\Bazz\autonoumuse_trader && powershell -Command "Get-ChildItem models,train,env -Filter *.py | ForEach-Object { $c = (Get-Content $_.FullName).Count; Write-Host ('{0}: {1} lines' -f $_.FullName, $c) }"

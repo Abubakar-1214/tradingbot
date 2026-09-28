@@ -1,0 +1,1 @@
+powershell -Command "Select-String -LiteralPath 'features\multi_timeframe.py' -Pattern 'resample|shift' | ForEach-Object { $_.LineNumber.ToString() + ': ' + $_.Line.Trim() }"

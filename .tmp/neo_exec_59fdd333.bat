@@ -1,0 +1,1 @@
+cd e:\Desktop\NeoMind\Bazz\autonoumuse_trader && dir models && for %f in (models\*.py) do @echo %f & find /c /v "" %f

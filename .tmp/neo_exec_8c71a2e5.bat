@@ -1,0 +1,1 @@
+powershell -Command "git -C 'e:\Desktop\NeoMind\Bazz\autonoumuse_trader' check-ignore .env state logs KILL_SWITCH artifacts\_smoke_state"

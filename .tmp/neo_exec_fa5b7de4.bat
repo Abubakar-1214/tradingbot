@@ -1,0 +1,1 @@
+cd /d e:\Desktop\NeoMind\Bazz\autonoumuse_trader && if exist plans\plan.md (echo PLAN_EXISTS) else (echo NO_PLAN)

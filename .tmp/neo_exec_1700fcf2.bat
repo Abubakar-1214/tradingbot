@@ -1,0 +1,1 @@
+call .venv\Scripts\activate.bat && python scripts\_apply_multi_tf_shift.py && python -m py_compile features\multi_timeframe.py data\sentiment_analysis.py && echo COMPILE_OK

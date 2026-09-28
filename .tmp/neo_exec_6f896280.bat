@@ -1,0 +1,1 @@
+powershell -Command "Get-ChildItem 'research' | Select-Object Name,Length; Write-Host '---PYTHON---'; python --version"

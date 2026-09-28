@@ -1,0 +1,1 @@
+powershell -Command "Get-Content -LiteralPath 'e:\Desktop\NeoMind\Bazz\autonoumuse_trader\backtest\report_backtest.md' -TotalCount 120"

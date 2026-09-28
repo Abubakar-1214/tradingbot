@@ -1,0 +1,1 @@
+cd /d e:\Desktop\NeoMind\Bazz\autonoumuse_trader && python -c "lines=open('models/adversarial_training.py',encoding='utf-8',errors='replace').read().splitlines(); print('ADV 211:'); [print(i+1,lines[i]) for i in range(209,213) if i<len(lines)]; print('ADV 457:'); [print(i+1,lines[i]) for i in range(455,459) if i<len(lines)]"

@@ -1,0 +1,1 @@
+powershell -Command "Select-String -LiteralPath 'e:\Desktop\NeoMind\Bazz\autonoumuse_trader\models\dreamer_components.py' -Pattern 'class Actor|class Critic|def get_state|def sample|def dist|def forward' | Select-Object -First 20 LineNumber,Line"

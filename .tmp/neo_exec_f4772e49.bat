@@ -1,0 +1,1 @@
+cd /app/e:/Desktop/NeoMind/Bazz/autonoumuse_trader && dir research && echo "---" && powershell -Command "(Get-Item 'research\tradingbot_audit_report.html').Length"

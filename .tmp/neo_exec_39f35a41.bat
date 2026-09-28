@@ -1,0 +1,1 @@
+call .venv\Scripts\activate.bat && python scripts\_run_pytest_evidence.py

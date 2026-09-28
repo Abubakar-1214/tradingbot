@@ -1,0 +1,1 @@
+call .venv\Scripts\activate.bat && python scripts\_apply_feature_fixes.py

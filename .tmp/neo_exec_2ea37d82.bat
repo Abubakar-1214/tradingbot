@@ -1,0 +1,1 @@
+.venv\Scripts\python.exe scripts\verify_risk.py | findstr /C:"RESULT" && .venv\Scripts\python.exe scripts\verify_risk_integration.py | findstr /C:"RESULT"

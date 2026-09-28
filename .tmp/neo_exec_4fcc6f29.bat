@@ -1,0 +1,1 @@
+powershell -Command "$r='e:\Desktop\NeoMind\Bazz\autonoumuse_trader'; Select-String -Path (Join-Path $r 'plans\plan.md') -Pattern '^- \[|## Subtasks|### Phase' | Select-Object -First 12 | ForEach-Object { $_.LineNumber.ToString() + ' ' + $_.Line.Trim() }"

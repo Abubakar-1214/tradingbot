@@ -381,13 +381,20 @@ def create_multi_timeframe_data(df_base, base_tf='H1'):
 
     for tf, rule in resample_rules.items():
         # Resample OHLCV
-        resampled = df_base.resample(rule).agg({
+        resampled = df_base.resample(rule, label="right", closed="right").agg({
             'open': 'first',
             'high': 'max',
             'low': 'min',
             'close': 'last',
             'volume': 'sum' if 'volume' in df_base.columns else lambda x: 0,
         }).dropna()
+
+        # P0-4 FIX: a higher-TF candle is only known once it CLOSES.  Shifting
+        # every non-base frame by one period guarantees that forward-filling it
+        # onto the base index can never leak the current (unclosed) candle's
+        # close into the lower timeframe.
+        if tf != base_tf:
+            resampled = resampled.shift(1).dropna()
 
         data_dict[tf] = resampled
 

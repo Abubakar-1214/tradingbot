@@ -1,0 +1,1 @@
+powershell -Command "$f='e:\Desktop\NeoMind\Bazz\autonoumuse_trader\models\dreamer_components.py'; $c=Get-Content -LiteralPath $f; $c | Select-Object -Skip 193 -First 25"

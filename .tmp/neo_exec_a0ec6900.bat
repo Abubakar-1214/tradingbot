@@ -1,0 +1,1 @@
+powershell -Command "Get-ChildItem -LiteralPath 'e:\Desktop\NeoMind\Bazz\autonoumuse_trader\data' -Filter *.csv | Select-Object Name, Length; '---'; Get-ChildItem -LiteralPath 'e:\Desktop\NeoMind\Bazz\autonoumuse_trader\backtest' | Select-Object Name"

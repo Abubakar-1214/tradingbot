@@ -1,0 +1,1 @@
+findstr /C:"resampled = resampled.shift" features\multi_timeframe.py && echo SHIFT_OK

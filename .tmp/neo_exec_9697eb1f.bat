@@ -1,0 +1,1 @@
+python -c "import re; p=r'e:\Desktop\NeoMind\Bazz\autonoumuse_trader\models_audit_report.md'; lines=open(p,encoding='utf-8',errors='replace').read().splitlines(); print('TOTAL',len(lines)); [print(i,l[:100]) for i,l in enumerate(lines,1) if l.startswith('#')]"

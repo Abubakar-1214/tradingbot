@@ -1,0 +1,1 @@
+cd /app/e:\\Desktop\\NeoMind\\Bazz\\autonoumuse_trader 2>/dev/null || cd "/app/e:\Desktop\NeoMind\Bazz\autonoumuse_trader" 2>/dev/null; pwd; ls -la models_audit_report.md 2>/dev/null; wc -l models_audit_report.md 2>/dev/null; wc -c models_audit_report.md 2>/dev/null

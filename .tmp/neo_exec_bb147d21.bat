@@ -1,0 +1,1 @@
+dir /b /s "e:\Desktop\NeoMind\Bazz\autonoumuse_trader\requirements.txt" "e:\Desktop\NeoMind\Bazz\autonoumuse_trader\FIXES.md" "e:\Desktop\NeoMind\Bazz\autonoumuse_trader\README.md" "e:\Desktop\NeoMind\Bazz\autonoumuse_trader\.env.example" "e:\Desktop\NeoMind\Bazz\autonoumuse_trader\.env" 2>nul

@@ -1,0 +1,1 @@
+find /app -maxdepth 3 -name "requirements.txt" -o -maxdepth 3 -name "FIXES.md" -o -maxdepth 3 -name "README.md" -o -maxdepth 3 -name ".env.example" -o -maxdepth 3 -name ".env" 2>/dev/null | head -20

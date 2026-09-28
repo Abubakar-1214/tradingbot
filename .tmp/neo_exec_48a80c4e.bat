@@ -1,0 +1,1 @@
+powershell -Command "Select-String -LiteralPath 'e:\Desktop\NeoMind\Bazz\autonoumuse_trader\models\risk_supervisor.py' -Pattern 'return False, .*"|CIRCUIT_BREAKER|TOO_MANY_LOSSES|MAX_DRAWDOWN|COOLDOWN|CORRELATION_GUARD|POSITION_TOO_LARGE|max_position_size|MAX_TRADES' | Select-Object -First 30 LineNumber,Line"

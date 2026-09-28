@@ -1,0 +1,1 @@
+cd "e:\Desktop\NeoMind\Bazz\autonoumuse_trader" && dir /s /b *.py | findstr /v __pycache__ | findstr /v .venv | findstr /v archive

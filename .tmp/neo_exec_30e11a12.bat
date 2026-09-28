@@ -1,0 +1,1 @@
+call .venv\Scripts\activate.bat && python -m pytest tests env -q

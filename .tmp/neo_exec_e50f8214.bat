@@ -1,0 +1,1 @@
+cd "e:\Desktop\NeoMind\Bazz\autonoumuse_trader" && powershell -Command "Get-Content -LiteralPath 'Advanced_100_AI_Models_List.csv' | Select-Object -Skip 39 -First 70"

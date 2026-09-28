@@ -1,0 +1,1 @@
+powershell -Command "Select-String -Path 'e:\Desktop\NeoMind\Bazz\autonoumuse_trader\*.py','e:\Desktop\NeoMind\Bazz\autonoumuse_trader\*\*.py','e:\Desktop\NeoMind\Bazz\autonoumuse_trader\*\*\*.py' -Pattern 'backtest_engine' -List | Select-Object Path -Unique"

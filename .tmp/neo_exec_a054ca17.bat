@@ -1,0 +1,1 @@
+.venv\Scripts\python.exe scripts\_patch_risk_logging.py && .venv\Scripts\python.exe -m py_compile models\risk_supervisor.py && .venv\Scripts\python.exe scripts\verify_risk_integration.py 2>&1 | findstr /C:"RESULT" /C:"Logging error" /C:"ValueError"

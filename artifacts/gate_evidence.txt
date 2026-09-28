@@ -1,0 +1,172 @@
+generated: 2026-09-28 12:47:16 UTC
+Each gate run TWICE; requirement: exit 0 both runs with the expected pass count.
+==============================================================================
+[scripts/verify_config.py] run 1/2 exit=0 (expected 24 passes) duration=0.1s OK
+      [PASS] MT5_LOGIN listed as failure
+      [PASS] MT5_SERVER listed as failure
+    
+    [5] invalid TRADING_MODE raises
+      [PASS] TRADING_MODE=paper raises ValueError
+    
+    [6] RiskConfig validation
+      [PASS] risk_per_trade > max_daily_loss raises
+      [PASS] risk defaults valid
+    
+    ================================================================
+    RESULT: 24 passed, 0 failed
+==============================================================================
+[scripts/verify_config.py] run 2/2 exit=0 (expected 24 passes) duration=0.1s OK
+      [PASS] MT5_LOGIN listed as failure
+      [PASS] MT5_SERVER listed as failure
+    
+    [5] invalid TRADING_MODE raises
+      [PASS] TRADING_MODE=paper raises ValueError
+    
+    [6] RiskConfig validation
+      [PASS] risk_per_trade > max_daily_loss raises
+      [PASS] risk defaults valid
+    
+    ================================================================
+    RESULT: 24 passed, 0 failed
+==============================================================================
+[scripts/verify_features.py] run 1/2 exit=0 (expected 33 passes) duration=1.5s OK
+      [PASS] multi_timeframe: closed='right'
+      [PASS] multi_timeframe: shift(1) after resample
+      [PASS] macro: daily shift(1) before ffill
+      [PASS] timeframe_features: tick_volume support
+      [PASS] timeframe_features: volume OR tick_volume guard
+      [PASS] calendar_features: vectorized searchsorted
+      [PASS] calendar_features: no per-row python loop
+      [PASS] sentiment: no hard-coded 0.0 placeholder
+      [PASS] make_features: no full-dataset normalisation
+    
+    ==================================================================
+    RESULT: 33 passed, 0 failed
+==============================================================================
+[scripts/verify_features.py] run 2/2 exit=0 (expected 33 passes) duration=0.8s OK
+      [PASS] multi_timeframe: closed='right'
+      [PASS] multi_timeframe: shift(1) after resample
+      [PASS] macro: daily shift(1) before ffill
+      [PASS] timeframe_features: tick_volume support
+      [PASS] timeframe_features: volume OR tick_volume guard
+      [PASS] calendar_features: vectorized searchsorted
+      [PASS] calendar_features: no per-row python loop
+      [PASS] sentiment: no hard-coded 0.0 placeholder
+      [PASS] make_features: no full-dataset normalisation
+    
+    ==================================================================
+    RESULT: 33 passed, 0 failed
+==============================================================================
+[scripts/verify_risk.py] run 1/2 exit=0 (expected 29 passes) duration=0.5s OK
+    EMERGENCY SHUTDOWN ACTIVATED — all trading halted, manual restart required
+    Trade REJECTED: HALTED until 12:00 (8760.0h remaining)
+    3 consecutive losses
+    4 consecutive losses
+    5 consecutive losses
+    Trade REJECTED: TOO_MANY_LOSSES: 5 consecutive losses
+    Trade REJECTED: CORRELATION_GUARD: DXY momentum 0.050 blocks LONG
+    Trade REJECTED: MAX_TRADES: daily limit reached (2)
+    Trade REJECTED: COOLDOWN: wait 300s before next trade
+    Trade REJECTED: SPREAD_TOO_WIDE: 0.00300 > 0.00050
+    Trade REJECTED: HIGH_VOLATILITY: 9.00 > 3.0
+    Trade REJECTED: EVENT_RISK: max position 5.00% during news
+==============================================================================
+[scripts/verify_risk.py] run 2/2 exit=0 (expected 29 passes) duration=0.5s OK
+    EMERGENCY SHUTDOWN ACTIVATED — all trading halted, manual restart required
+    Trade REJECTED: HALTED until 12:00 (8760.0h remaining)
+    3 consecutive losses
+    4 consecutive losses
+    5 consecutive losses
+    Trade REJECTED: TOO_MANY_LOSSES: 5 consecutive losses
+    Trade REJECTED: CORRELATION_GUARD: DXY momentum 0.050 blocks LONG
+    Trade REJECTED: MAX_TRADES: daily limit reached (2)
+    Trade REJECTED: COOLDOWN: wait 300s before next trade
+    Trade REJECTED: SPREAD_TOO_WIDE: 0.00300 > 0.00050
+    Trade REJECTED: HIGH_VOLATILITY: 9.00 > 3.0
+    Trade REJECTED: EVENT_RISK: max position 5.00% during news
+==============================================================================
+[scripts/verify_backtest.py] run 1/2 exit=0 (expected 26 passes) duration=4.8s OK
+    
+    [6] full metrics dict
+      [PASS] all required metrics present
+      [PASS] sharpe/sortino/winrate are finite
+      [PASS] num_trades >= 20
+    
+    [7] causality of rolling indicators (no future data at decision time)
+      [PASS] rolling indicator is NaN for first (n-1) bars (causal warm-up)
+      [PASS] indicator value at bar t depends only on bars <= t
+    
+    ======================================================================
+    RESULT: 26 passed, 0 failed
+==============================================================================
+[scripts/verify_backtest.py] run 2/2 exit=0 (expected 26 passes) duration=1.6s OK
+    
+    [6] full metrics dict
+      [PASS] all required metrics present
+      [PASS] sharpe/sortino/winrate are finite
+      [PASS] num_trades >= 20
+    
+    [7] causality of rolling indicators (no future data at decision time)
+      [PASS] rolling indicator is NaN for first (n-1) bars (causal warm-up)
+      [PASS] indicator value at bar t depends only on bars <= t
+    
+    ======================================================================
+    RESULT: 26 passed, 0 failed
+==============================================================================
+[scripts/verify_broker.py] run 1/2 exit=0 (expected 29 passes) duration=0.2s OK
+      [PASS] volume drift detected as mismatched
+    
+    [5] all MockBroker fills carry SL/TP
+      [PASS] all open mock positions have SL
+      [PASS] all open mock positions have TP
+    
+    ======================================================================
+    RESULT: 29 passed, 0 failed
+    Transient retcode 10004 on attempt 1/3 — re-quoting (symbol=XAUUSD side=buy)
+    Transient retcode 10004 on attempt 1/3 — re-quoting (symbol=XAUUSD side=buy)
+    Transient retcode 10004 on attempt 2/3 — re-quoting (symbol=XAUUSD side=buy)
+    Transient retcode 10004 on attempt 3/3 — re-quoting (symbol=XAUUSD side=buy)
+==============================================================================
+[scripts/verify_broker.py] run 2/2 exit=0 (expected 29 passes) duration=0.2s OK
+      [PASS] volume drift detected as mismatched
+    
+    [5] all MockBroker fills carry SL/TP
+      [PASS] all open mock positions have SL
+      [PASS] all open mock positions have TP
+    
+    ======================================================================
+    RESULT: 29 passed, 0 failed
+    Transient retcode 10004 on attempt 1/3 — re-quoting (symbol=XAUUSD side=buy)
+    Transient retcode 10004 on attempt 1/3 — re-quoting (symbol=XAUUSD side=buy)
+    Transient retcode 10004 on attempt 2/3 — re-quoting (symbol=XAUUSD side=buy)
+    Transient retcode 10004 on attempt 3/3 — re-quoting (symbol=XAUUSD side=buy)
+==============================================================================
+[scripts/verify_risk_integration.py] run 1/2 exit=0 (expected 23 passes) duration=2.7s OK
+    INFO:models.risk_supervisor:RiskSupervisor initialized (daily_loss=0.1%, dd=0.1%, max_pos=0.1%, max_losses=5, corr_guard=False)
+    INFO:models.position_sizing:💰 ATR Position Sizer: 2.0% risk, 2.0x ATR stop
+    INFO:live.trade_executor:ENTRY buy ticket=1 vol=0.01 sl=1992.25 tp=2012.25 (risk=APPROVED)
+    INFO:live.trade_executor:ENTRY buy ticket=2 vol=0.01 sl=1992.25 tp=2012.25 (risk=APPROVED)
+    INFO:live.mock_broker:MockBroker connected (seed=42, spread=0.00025)
+    INFO:models.risk_supervisor:RiskSupervisor initialized (daily_loss=0.1%, dd=0.1%, max_pos=0.1%, max_losses=5, corr_guard=False)
+    INFO:models.position_sizing:💰 ATR Position Sizer: 2.0% risk, 2.0x ATR stop
+    INFO:live.trade_executor:ENTRY buy ticket=1 vol=0.01 sl=1992.25 tp=2012.25 (risk=APPROVED)
+    INFO:live.mock_broker:MockBroker connected (seed=42, spread=0.00025)
+    INFO:models.risk_supervisor:RiskSupervisor initialized (daily_loss=0.1%, dd=0.1%, max_pos=0.1%, max_losses=5, corr_guard=False)
+    INFO:models.position_sizing:💰 ATR Position Sizer: 2.0% risk, 2.0x ATR stop
+    INFO:live.trade_executor:ENTRY buy ticket=1 vol=0.01 sl=1992.25 tp=2012.25 (risk=APPROVED)
+==============================================================================
+[scripts/verify_risk_integration.py] run 2/2 exit=0 (expected 23 passes) duration=2.5s OK
+    INFO:models.risk_supervisor:RiskSupervisor initialized (daily_loss=0.1%, dd=0.1%, max_pos=0.1%, max_losses=5, corr_guard=False)
+    INFO:models.position_sizing:💰 ATR Position Sizer: 2.0% risk, 2.0x ATR stop
+    INFO:live.trade_executor:ENTRY buy ticket=1 vol=0.01 sl=1992.25 tp=2012.25 (risk=APPROVED)
+    INFO:live.trade_executor:ENTRY buy ticket=2 vol=0.01 sl=1992.25 tp=2012.25 (risk=APPROVED)
+    INFO:live.mock_broker:MockBroker connected (seed=42, spread=0.00025)
+    INFO:models.risk_supervisor:RiskSupervisor initialized (daily_loss=0.1%, dd=0.1%, max_pos=0.1%, max_losses=5, corr_guard=False)
+    INFO:models.position_sizing:💰 ATR Position Sizer: 2.0% risk, 2.0x ATR stop
+    INFO:live.trade_executor:ENTRY buy ticket=1 vol=0.01 sl=1992.25 tp=2012.25 (risk=APPROVED)
+    INFO:live.mock_broker:MockBroker connected (seed=42, spread=0.00025)
+    INFO:models.risk_supervisor:RiskSupervisor initialized (daily_loss=0.1%, dd=0.1%, max_pos=0.1%, max_losses=5, corr_guard=False)
+    INFO:models.position_sizing:💰 ATR Position Sizer: 2.0% risk, 2.0x ATR stop
+    INFO:live.trade_executor:ENTRY buy ticket=1 vol=0.01 sl=1992.25 tp=2012.25 (risk=APPROVED)
+==============================================================================
+ALL GATES GREEN (12/12 runs exit 0)

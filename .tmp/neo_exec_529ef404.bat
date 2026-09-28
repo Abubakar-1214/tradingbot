@@ -1,0 +1,1 @@
+powershell -Command "Get-ChildItem -LiteralPath 'e:\Desktop\NeoMind\Bazz\autonoumuse_trader\.kiro' -Recurse -File | Select-Object FullName; Write-Host '---QODER---'; Get-ChildItem -LiteralPath 'e:\Desktop\NeoMind\Bazz\autonoumuse_trader\.qoder' -Recurse -File | Select-Object FullName"

@@ -1,0 +1,1 @@
+cd "e:\Desktop\NeoMind\Bazz\autonoumuse_trader" && powershell -Command "Get-ChildItem docs,plans,research,reports -Recurse -File | Select-Object FullName | Format-Table -AutoSize -Wrap"

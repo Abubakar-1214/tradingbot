@@ -1,0 +1,1 @@
+cd /d e:\Desktop\NeoMind\Bazz\autonoumuse_trader && .venv\Scripts\python.exe -m pip install "backtesting==0.6.2" --quiet 2>&1

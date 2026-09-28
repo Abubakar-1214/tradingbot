@@ -1,0 +1,1 @@
+powershell -Command "$f='e:\Desktop\NeoMind\Bazz\autonoumuse_trader\models\position_sizing.py'; $c=Get-Content -LiteralPath $f; $c | Select-Object -Skip 308 -First 92"

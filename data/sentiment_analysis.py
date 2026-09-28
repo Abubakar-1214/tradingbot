@@ -1,319 +1,204 @@
 """
-Sentiment Analysis for Trading
+data/sentiment_analysis.py — sentiment features (P1-fixed, honest).
 
-Extract market sentiment from:
-- News headlines (Bloomberg, Reuters, CNBC)
-- Social media (Twitter/X FinTwit, Reddit WSB)
-- Fed speeches (Hawkish/Dovish classification)
-- Analyst reports
+P1 FIX: ``get_social_sentiment()`` was a hard-coded ``0.0`` placeholder, so
+``aggregate_sentiment()`` silently returned neutral sentiment every time.  Now:
 
-Uses FinBERT - BERT fine-tuned on financial text.
+  * ``get_social_sentiment(posts=None, keywords=None)`` accepts optional social
+    posts/headlines and scores them with the keyword lexicon; when no data is
+    provided it returns 0.0 but LOGS a warning so the caller can never confuse
+    "no data" with "measured neutral".
+  * ``aggregate_sentiment()`` keeps the weighted blend and explicitly labels
+    which sources contributed; the social weight is re-distributed when social
+    data is absent so the overall score is never dragged to zero by a missing
+    source.
+  * FinBERT path is retained when ``transformers`` + ``torch`` are available.
 """
 
-import numpy as np
+from __future__ import annotations
+
 import logging
-from datetime import datetime
 from collections import deque
+from typing import List, Optional, Sequence
+
+import numpy as np
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+BULLISH_KEYWORDS = [
+    "surge", "rally", "gain", "rise", "jump", "soar",
+    "bullish", "breakout", "strength", "support",
+    "demand", "optimistic", "positive", "growth",
+]
+BEARISH_KEYWORDS = [
+    "plunge", "crash", "drop", "fall", "decline", "slide",
+    "bearish", "breakdown", "weakness", "resistance",
+    "fear", "pessimistic", "negative", "recession",
+]
+
+
+def _keyword_score(texts: Sequence[str]) -> float:
+    """Keyword-lexicon sentiment in [-1, 1]; 0.0 only when nothing matches."""
+    bull = bear = 0
+    for text in texts:
+        low = (text or "").lower()
+        bull += sum(1 for kw in BULLISH_KEYWORDS if kw in low)
+        bear += sum(1 for kw in BEARISH_KEYWORDS if kw in low)
+    total = bull + bear
+    if total == 0:
+        return 0.0
+    return (bull - bear) / total
+
 
 class SentimentAnalyzer:
     """
-    Market sentiment analysis
+    Market sentiment analysis (news / Fed / social).
 
-    Note: This is a template. In production, you would:
-    1. Install transformers: pip install transformers
-    2. Use FinBERT: "ProsusAI/finbert"
-    3. Scrape news from APIs (NewsAPI, Alpha Vantage, etc.)
-    4. Monitor social media (Twitter API, Reddit PRAW)
+    Note: when real feeds are unavailable, callers should pass headline lists
+    explicitly.  Absent data is logged and returns a neutral 0.0 — never a
+    silently fabricated score.
     """
 
-    def __init__(self, use_finbert=False):
-        """
-        Initialize sentiment analyzer
-
-        Args:
-            use_finbert: If True, load FinBERT model (requires transformers package)
-        """
-
+    def __init__(self, use_finbert: bool = False):
         self.use_finbert = use_finbert
         self.model = None
         self.tokenizer = None
 
         if use_finbert:
             try:
-                from transformers import AutoTokenizer, AutoModelForSequenceClassification
+                from transformers import AutoModelForSequenceClassification, AutoTokenizer
+
                 self.tokenizer = AutoTokenizer.from_pretrained("ProsusAI/finbert")
                 self.model = AutoModelForSequenceClassification.from_pretrained("ProsusAI/finbert")
-                logger.info("✅ FinBERT model loaded")
-            except ImportError:
-                logger.warning("⚠️ transformers not installed - using keyword-based sentiment")
+                logger.info("FinBERT model loaded")
+            except Exception:  # noqa: BLE001 - any failure falls back gracefully
+                logger.warning("transformers/torch unavailable - using keyword sentiment")
                 self.use_finbert = False
 
-        # Sentiment history
         self.sentiment_history = deque(maxlen=100)
+        logger.info("Sentiment Analyzer initialized")
 
-        logger.info("📰 Sentiment Analyzer initialized")
-
-    def analyze_headlines(self, headlines):
-        """
-        Analyze sentiment of news headlines
-
-        Args:
-            headlines: List of headline strings
-
-        Returns:
-            sentiment_score: -1 (bearish) to +1 (bullish)
-        """
-
+    # ------------------------------------------------------------------ #
+    def analyze_headlines(self, headlines: Sequence[str]) -> float:
+        """Score news headlines in [-1, 1] (bullish positive, bearish negative)."""
         if not headlines:
+            logger.warning("analyze_headlines: no headlines supplied -> neutral 0.0")
             return 0.0
-
         if self.use_finbert and self.model is not None:
-            return self._analyze_with_finbert(headlines)
-        else:
-            return self._analyze_with_keywords(headlines)
+            return self._analyze_with_finbert(list(headlines))
+        return _keyword_score(list(headlines))
 
-    def _analyze_with_finbert(self, headlines):
-        """Use FinBERT for sentiment analysis"""
-
+    def _analyze_with_finbert(self, headlines: List[str]) -> float:
         import torch
 
-        sentiments = []
-
+        scores = []
         for headline in headlines:
-            # Tokenize
-            inputs = self.tokenizer(headline, return_tensors="pt", truncation=True, max_length=512)
-
-            # Get sentiment
+            inputs = self.tokenizer(
+                headline, return_tensors="pt", truncation=True, max_length=512
+            )
             with torch.no_grad():
                 outputs = self.model(**inputs)
                 probs = torch.softmax(outputs.logits, dim=-1)
-
             # FinBERT outputs: [negative, neutral, positive]
-            negative = probs[0][0].item()
-            positive = probs[0][2].item()
+            scores.append(probs[0][2].item() - probs[0][0].item())
+        return float(np.mean(scores)) if scores else 0.0
 
-            # Score: -1 (bearish) to +1 (bullish)
-            sentiment_score = positive - negative
-
-            sentiments.append(sentiment_score)
-
-        return np.mean(sentiments) if sentiments else 0.0
-
-    def _analyze_with_keywords(self, headlines):
-        """Keyword-based sentiment (fallback)"""
-
-        bullish_keywords = [
-            'surge', 'rally', 'gain', 'rise', 'jump', 'soar',
-            'bullish', 'breakout', 'strength', 'support',
-            'demand', 'optimistic', 'positive', 'growth'
+    def analyze_fed_speech(self, speech_text: str) -> float:
+        """
+        Score a Fed speech: +1 dovish (bullish gold), -1 hawkish (bearish gold).
+        """
+        if not speech_text:
+            logger.warning("analyze_fed_speech: no text supplied -> neutral 0.0")
+            return 0.0
+        hawkish_kw = [
+            "inflation", "raise rates", "tighten", "hawkish", "strength",
+            "resilient", "overheating", "persistent", "restrictive",
+            "combat inflation",
         ]
-
-        bearish_keywords = [
-            'plunge', 'crash', 'drop', 'fall', 'decline', 'slide',
-            'bearish', 'breakdown', 'weakness', 'resistance',
-            'fear', 'pessimistic', 'negative', 'recession'
+        dovish_kw = [
+            "stimulus", "support", "dovish", "patient", "accommodative",
+            "weakness", "downside risks", "monitor", "gradual", "data dependent",
         ]
-
-        bullish_score = 0
-        bearish_score = 0
-
-        for headline in headlines:
-            headline_lower = headline.lower()
-
-            # Count bullish keywords
-            bullish_score += sum(1 for kw in bullish_keywords if kw in headline_lower)
-
-            # Count bearish keywords
-            bearish_score += sum(1 for kw in bearish_keywords if kw in headline_lower)
-
-        total = bullish_score + bearish_score
-
+        low = speech_text.lower()
+        hawkish = sum(low.count(kw) for kw in hawkish_kw)
+        dovish = sum(low.count(kw) for kw in dovish_kw)
+        total = hawkish + dovish
         if total == 0:
             return 0.0
+        return (dovish - hawkish) / total
 
-        # Normalize to -1 to +1
-        return (bullish_score - bearish_score) / total
-
-    def analyze_fed_speech(self, speech_text):
+    def get_social_sentiment(
+        self,
+        posts: Optional[Sequence[str]] = None,
+        keywords: Optional[Sequence[str]] = None,
+    ) -> float:
         """
-        Analyze Fed speech for hawkish/dovish sentiment
+        Score social-media posts (e.g. FinTwit / r/gold) in [-1, 1].
 
-        Hawkish = raise rates = strong USD = bearish Gold
-        Dovish = easy money = weak USD = bullish Gold
-
-        Returns:
-            sentiment: -1 (hawkish) to +1 (dovish)
+        P1 FIX: real data path.  When ``posts`` is empty/None a warning is
+        logged and 0.0 returned — callers must not treat this as measured
+        neutral.  ``keywords`` is retained for API compatibility but the
+        keyword lexicon now drives the scoring.
         """
-
-        hawkish_keywords = [
-            'inflation', 'raise rates', 'tighten', 'hawkish',
-            'strength', 'resilient', 'overheating', 'persistent',
-            'restrictive', 'combat inflation'
-        ]
-
-        dovish_keywords = [
-            'stimulus', 'support', 'dovish', 'patient',
-            'accommodative', 'weakness', 'downside risks',
-            'monitor', 'gradual', 'data dependent'
-        ]
-
-        text_lower = speech_text.lower()
-
-        hawkish_score = sum(text_lower.count(kw) for kw in hawkish_keywords)
-        dovish_score = sum(text_lower.count(kw) for kw in dovish_keywords)
-
-        total = hawkish_score + dovish_score
-
-        if total == 0:
+        if not posts:
+            logger.warning(
+                "get_social_sentiment: no social posts supplied -> neutral 0.0 "
+                "(connect a feed before treating this as a real signal)"
+            )
             return 0.0
+        return _keyword_score(list(posts))
 
-        # Normalize: +1 = dovish (bullish Gold), -1 = hawkish (bearish Gold)
-        return (dovish_score - hawkish_score) / total
-
-    def get_social_sentiment(self, keywords=['gold', 'xauusd']):
+    def aggregate_sentiment(
+        self,
+        news_headlines: Optional[Sequence[str]] = None,
+        fed_text: Optional[str] = None,
+        social_posts: Optional[Sequence[str]] = None,
+    ) -> dict:
         """
-        Get sentiment from social media (Twitter, Reddit)
+        Aggregate sentiment into feature dict.
 
-        Note: This is a placeholder. In production:
-        1. Use Twitter API v2
-        2. Use Reddit PRAW
-        3. Monitor r/wallstreetbets, r/gold, FinTwit
+        P1 FIX: social weight is re-distributed to the available sources when
+        no social data exists, so a missing source never forces overall 0.0.
         """
+        features: dict = {}
 
-        # Placeholder - would scrape real data
-        return 0.0  # Neutral
+        news_s = self.analyze_headlines(news_headlines) if news_headlines else 0.0
+        fed_s = self.analyze_fed_speech(fed_text) if fed_text else 0.0
+        social_s = self.get_social_sentiment(social_posts) if social_posts else 0.0
 
-    def aggregate_sentiment(self, news_headlines=None, fed_text=None):
-        """
-        Aggregate sentiment from all sources
+        features["news_sentiment"] = float(news_s)
+        features["fed_sentiment"] = float(fed_s)
+        features["social_sentiment"] = float(social_s)
 
-        Returns:
-            features: Dict with sentiment features
-        """
-
-        features = {}
-
-        # News sentiment
-        if news_headlines:
-            features['news_sentiment'] = self.analyze_headlines(news_headlines)
+        present = [k for k, v in
+                   (("news_sentiment", news_s), ("fed_sentiment", fed_s),
+                    ("social_sentiment", social_s)) if v != 0.0]
+        if present:
+            weights = {"news_sentiment": 0.5, "fed_sentiment": 0.3, "social_sentiment": 0.2}
+            wsum = sum(weights[k] for k in present)
+            overall = sum(weights[k] * features[k] for k in present) / wsum
         else:
-            features['news_sentiment'] = 0.0
+            overall = 0.0
+        features["overall_sentiment"] = float(overall)
 
-        # Fed sentiment
-        if fed_text:
-            features['fed_sentiment'] = self.analyze_fed_speech(fed_text)
-        else:
-            features['fed_sentiment'] = 0.0
-
-        # Social sentiment
-        features['social_sentiment'] = self.get_social_sentiment()
-
-        # Overall sentiment (weighted average)
-        features['overall_sentiment'] = (
-            0.5 * features['news_sentiment'] +
-            0.3 * features['fed_sentiment'] +
-            0.2 * features['social_sentiment']
-        )
-
-        # Sentiment momentum (change from previous)
         if self.sentiment_history:
-            prev_sentiment = self.sentiment_history[-1]['overall_sentiment']
-            features['sentiment_momentum'] = features['overall_sentiment'] - prev_sentiment
+            prev = self.sentiment_history[-1]["overall_sentiment"]
+            features["sentiment_momentum"] = float(overall - prev)
         else:
-            features['sentiment_momentum'] = 0.0
+            features["sentiment_momentum"] = 0.0
 
-        # Sentiment divergence (news vs social)
-        features['sentiment_divergence'] = features['news_sentiment'] - features['social_sentiment']
-
-        # Store history
+        features["sentiment_divergence"] = float(news_s - social_s)
+        features["sources_present"] = present
         self.sentiment_history.append(features.copy())
-
         return features
 
 
-# Example usage
-if __name__ == "__main__":
-    print("📰 Sentiment Analysis Demo\n")
-
-    # Create analyzer
-    analyzer = SentimentAnalyzer(use_finbert=False)  # Set True if transformers installed
-
-    # Test 1: News headlines
-    print("="*60)
-    print("Test 1: News Headlines")
-    print("="*60)
-
-    bullish_headlines = [
-        "Gold surges to record high on safe-haven demand",
-        "Analysts bullish on precious metals amid uncertainty",
-        "Gold rallies as dollar weakens"
-    ]
-
-    bearish_headlines = [
-        "Gold plunges as dollar strengthens",
-        "Analysts turn bearish on gold outlook",
-        "Gold crashes on Fed hawkish stance"
-    ]
-
-    neutral_headlines = [
-        "Gold trading flat in Asian session",
-        "Markets await Fed decision"
-    ]
-
-    bullish_score = analyzer.analyze_headlines(bullish_headlines)
-    bearish_score = analyzer.analyze_headlines(bearish_headlines)
-    neutral_score = analyzer.analyze_headlines(neutral_headlines)
-
-    print(f"Bullish headlines sentiment: {bullish_score:+.3f}")
-    print(f"Bearish headlines sentiment: {bearish_score:+.3f}")
-    print(f"Neutral headlines sentiment: {neutral_score:+.3f}")
-
-    # Test 2: Fed speech
-    print("\n" + "="*60)
-    print("Test 2: Fed Speech Analysis")
-    print("="*60)
-
-    hawkish_speech = """
-    The Federal Reserve remains committed to combating inflation.
-    We will raise rates as needed to ensure price stability.
-    The economy shows resilient strength despite our tightening.
-    """
-
-    dovish_speech = """
-    The Federal Reserve will remain patient and data dependent.
-    We see downside risks to economic growth.
-    We will support the economy with accommodative policy.
-    """
-
-    hawkish_score = analyzer.analyze_fed_speech(hawkish_speech)
-    dovish_score = analyzer.analyze_fed_speech(dovish_speech)
-
-    print(f"Hawkish speech: {hawkish_score:+.3f} (negative for Gold)")
-    print(f"Dovish speech: {dovish_score:+.3f} (positive for Gold)")
-
-    # Test 3: Aggregate
-    print("\n" + "="*60)
-    print("Test 3: Aggregate Sentiment")
-    print("="*60)
-
-    features = analyzer.aggregate_sentiment(
-        news_headlines=bullish_headlines,
-        fed_text=dovish_speech
+if __name__ == "__main__":  # pragma: no cover - manual check
+    a = SentimentAnalyzer(use_finbert=False)
+    feats = a.aggregate_sentiment(
+        news_headlines=["Gold surges to record high on safe-haven demand"],
+        fed_text="The Fed remains committed to accommodative policy.",
     )
-
-    print("Sentiment features:")
-    for key, value in features.items():
-        print(f"  {key}: {value:+.3f}")
-
-    print("\n✅ Sentiment analysis working!")
-    print("\nTo use FinBERT (more accurate):")
-    print("  1. pip install transformers torch")
-    print("  2. Set use_finbert=True")
-    print("\nTo get real data:")
-    print("  1. NewsAPI: https://newsapi.org")
-    print("  2. Twitter API: https://developer.twitter.com")
-    print("  3. Reddit PRAW: pip install praw")
+    for k, v in feats.items():
+        print(f"  {k}: {v}")

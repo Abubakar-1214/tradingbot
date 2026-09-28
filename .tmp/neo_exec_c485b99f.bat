@@ -1,0 +1,1 @@
+cd /d e:\Desktop\NeoMind\Bazz\autonoumuse_trader && python -c "lines=open('models/transformer_policy.py',encoding='utf-8',errors='replace').read().splitlines(); print('TF train_step 349-355:'); [print(i+1,lines[i]) for i in range(348,355) if i<len(lines)]"

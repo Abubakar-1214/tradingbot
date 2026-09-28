@@ -1,0 +1,1 @@
+powershell -Command "Get-Content 'e:\Desktop\NeoMind\Bazz\autonoumuse_trader\data\xauusd_h1.csv' -TotalCount 3; Write-Host '---'; Get-Content 'e:\Desktop\NeoMind\Bazz\autonoumuse_trader\data\xauusd_h1.csv' | Measure-Object -Line"

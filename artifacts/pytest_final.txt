@@ -1,0 +1,8 @@
+command: e:\Desktop\NeoMind\Bazz\autonoumuse_trader\.venv\Scripts\python.exe -m pytest tests env -q
+exit_code: 0
+duration_sec: 19.5
+--- output ---
+........................................................................ [ 82%]
+...............                                                          [100%]
+87 passed in 17.13s
+

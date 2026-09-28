@@ -1,0 +1,1 @@
+cd e:\Desktop\NeoMind\Bazz\autonoumuse_trader && dir train env && for %f in (train\*.py env\*.py) do @echo %f & find /c /v "" %f

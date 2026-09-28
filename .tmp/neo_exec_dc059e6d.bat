@@ -1,0 +1,1 @@
+powershell -Command "Select-String -LiteralPath 'e:\Desktop\NeoMind\Bazz\autonoumuse_trader\core\feature_pipeline.py' -Pattern '^class |^def |def transform|def fit|feature_names|load_feature_contract' | Select-Object -First 25 LineNumber,Line"

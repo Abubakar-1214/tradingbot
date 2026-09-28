@@ -1,0 +1,1 @@
+findstr /S /I /C:"check_trade" /C:"RiskSupervisor" /C:"risk_supervisor" *.py models\*.py live\*.py env\*.py train\*.py eval\*.py backtest\*.py core\*.py 2>nul

@@ -1,0 +1,1 @@
+dir /b live 2>nul & echo ---LIVE--- & dir /b models 2>nul & echo ---MODELS--- & dir /b . 2>nul | findstr /i "FIXES requirements .env README .gitignore" & echo ---ROOT--- & dir /b research 2>nul & echo ---RESEARCH--- & dir /b state logs 2>nul

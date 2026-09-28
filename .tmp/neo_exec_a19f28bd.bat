@@ -1,0 +1,1 @@
+cd /d "e:\Desktop\NeoMind\Bazz\autonoumuse_trader" && powershell -NoProfile -Command "Get-Content 'artifacts\pytest_final.txt' -Tail 15; Write-Output '=== GATE EVIDENCE ==='; Get-Content 'artifacts\gate_evidence.txt' -TotalCount 40"

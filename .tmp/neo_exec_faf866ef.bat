@@ -1,0 +1,1 @@
+powershell -Command "Select-String -LiteralPath 'e:\Desktop\NeoMind\Bazz\autonoumuse_trader\models\risk_supervisor.py' -Pattern 'POSITION_TOO_LARGE|requested_size|max_position' | Select-Object -First 15 LineNumber,Line"

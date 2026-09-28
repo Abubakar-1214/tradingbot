@@ -1,0 +1,1 @@
+powershell -Command "@('core\risk_gate.py','core\config.py','core\feature_pipeline.py','.github\workflows','pyproject.toml','docs\LIVE_VERIFICATION.md') | ForEach-Object { $p = Join-Path 'e:\Desktop\NeoMind\Bazz\autonoumuse_trader' $_; '{0} -> {1}' -f $_, (Test-Path -LiteralPath $p) }"

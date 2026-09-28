@@ -1,0 +1,1 @@
+.venv\Scripts\python.exe scripts\_patch_feature_pipeline.py && .venv\Scripts\python.exe -m py_compile core\feature_pipeline.py && echo PATCH_OK

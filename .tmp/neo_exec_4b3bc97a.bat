@@ -1,0 +1,1 @@
+powershell -Command "$f='e:\Desktop\NeoMind\Bazz\autonoumuse_trader\FIXES.md'; $c=Get-Content -LiteralPath $f; $p0=($c | Select-String -Pattern '^### P0-\d\d').Count; $p1=($c | Select-String -Pattern '^### P1-\d\d').Count; '__FIXES__ '+$p0+' P0 sections, '+$p1+' P1 sections'; ($c | Select-String -Pattern '^### P0-\d\d' | ForEach-Object { $_.Line.Trim() }) -join ' | '"

@@ -1,0 +1,1 @@
+powershell -Command "Get-ChildItem -LiteralPath 'e:\Desktop\NeoMind\Bazz\autonoumuse_trader' -Force | Select-Object Name, Mode | Format-Table -AutoSize"

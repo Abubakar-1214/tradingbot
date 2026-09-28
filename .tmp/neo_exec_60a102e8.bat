@@ -1,0 +1,1 @@
+call .\venv\Scripts\activate.bat && python scripts\verify_risk.py

@@ -1,0 +1,1 @@
+powershell -Command "Get-ChildItem -LiteralPath 'e:\Desktop\NeoMind\Bazz\autonoumuse_trader\.venv' -Force | Select-Object Name, Mode; if (Test-Path 'e:\Desktop\NeoMind\Bazz\autonoumuse_trader\.venv\Scripts\python.exe') {'PYEXE EXISTS'} else {'NO PYEXE'}"

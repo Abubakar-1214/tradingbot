@@ -1,0 +1,1 @@
+cd /d e:\Desktop\NeoMind\Bazz\autonoumuse_trader && grep -n -i "arxiv\|arXiv" models_audit_report.md | head -30 && echo "---COUNT---" && grep -c -i "arxiv" models_audit_report.md

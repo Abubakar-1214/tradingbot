@@ -1,0 +1,1 @@
+powershell -Command "Get-ChildItem -LiteralPath 'e:\Desktop\NeoMind\Bazz\autonoumuse_trader\tests' -ErrorAction SilentlyContinue | Select-Object Name; '---'; Test-Path 'e:\Desktop\NeoMind\Bazz\autonoumuse_trader\test_suite'; Test-Path 'e:\Desktop\NeoMind\Bazz\autonoumuse_trader\tests'"

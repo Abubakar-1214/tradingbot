@@ -1,0 +1,1 @@
+call .venv\Scripts\activate.bat && python scripts\_append_fixes_legacy.py

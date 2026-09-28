@@ -1,0 +1,1 @@
+call .venv\Scripts\activate.bat && python scripts\_run_gates_twice.py

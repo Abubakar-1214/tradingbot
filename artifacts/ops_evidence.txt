@@ -1,0 +1,100 @@
+# Ops Artifacts Evidence — recorded 2026-09-28 (final cycle)
+
+Acceptance criteria verified with recorded evidence for ALL four ops items.
+
+## (a) requirements.txt pinned == versions matching the venv + pip check clean
+
+`python -m pip check` → `No broken requirements found.` (exit 0)
+
+requirements.txt (20 pinned `==` lines) — excerpt of the pin list:
+
+```
+backtesting==0.6.2
+python-dotenv==1.2.3
+torch==2.14.0
+pandas==3.0.5
+numpy==2.5.3
+matplotlib==3.11.2
+gymnasium==1.3.0
+stable_baselines3==2.9.0
+scikit-learn==1.9.1
+scipy==1.18.1
+seaborn==0.13.2
+tqdm==4.70.1
+yfinance==1.7.0
+requests==2.34.2
+metaapi_cloud_sdk==29.1.1
+pytest==9.1.1
+```
+
+`backtesting==0.6.2` confirmed present in requirements.txt (cross-check [6] = True).
+
+## (b) .env created from .env.example; every referenced env var documented; .gitignore covers .env
+
+- `.env` EXISTS (Test-Path → ENV_EXISTS), created from `.env.example` with non-secret demo defaults
+  (`TRADING_MODE=demo`, `SYMBOL=XAUUSD`, `TIMEFRAME=H1`, `ALLOW_SHORT=false`, `SIGNAL_SOURCE=rule`,
+  risk/cost/macro/MT5 vars). Header comment documents the file is gitignored and live usage.
+- `.env.example` documents **49 keys** (cross-check [1]).
+- Env-key cross-check (`scripts/_ops_env_crosscheck.py`): every `os.environ.get`/`os.getenv` key
+  referenced in repo *.py (excluding venv/archive/research) is documented in `.env.example` →
+  `CROSSCHECK: PASS` ([2]=2 used keys, [3]=0 undocumented).
+- `core/config.py` loads the file via python-dotenv (cross-check [4] `load_dotenv` = True).
+
+`git check-ignore -v` output (exit 0):
+
+```
+.gitignore:57:.env  .env
+.gitignore:34:state/ state
+.gitignore:35:logs/  logs
+.gitignore:36:KILL_SWITCH   KILL_SWITCH
+.gitignore:39:artifacts/_smoke_state/  "artifacts\_smoke_state"
+```
+
+## (c) README honest status — inflated claims removed
+
+Cross-check on rewritten README.md:
+
+```
+[7] README contains '80-120%':     False
+[8] README contains 'Sharpe 3.5':  False
+[9] README contains 'NOT PRODUCTION READY': True
+```
+
+README now opens with `> **STATUS: RESEARCH / NOT PRODUCTION READY.**`, includes a
+"Verified Facts" table (pytest 87 passed exit 0; gates 12/12 runs exit 0; P1 29/29;
+live demo smoke fills=10; ops evidence), an honest "Backtest Verdict (Honest)" section
+citing `backtest/report_backtest.md` ("A live system MUST NOT run these without a
+material change"), and removed the dangling references (train/smoke_env.py,
+deploy_setup.sh, trading-bot.service, monitoring/production_monitor.py,
+backtest/backtest_engine.py, root-level live_trade_mt5.py/live_trade_metaapi.py,
+train/ppo_xauusd_latest.zip, train/feature_contract.json).
+
+## (d) Final integrity sweep (re-run after all ops/FIXES.md work)
+
+- Full pytest re-run: `87 passed in 17.13s`, exit_code 0 → artifacts/pytest_final.txt
+  (re-recorded).
+- All six gates ×2 (fresh): `ALL GATES GREEN (12/12 runs exit 0)` → artifacts/gate_evidence.txt
+  (re-recorded, 2026-09-28 12:47:16 UTC). Counts on BOTH runs: config 24/24, features 33/33,
+  risk 29/29, backtest 26/26, broker 29/29, risk_integration 23/23.
+- P1 fixes: `scripts/_verify_p1_fixes.py` → `P1 VERIFY OK — all checks passed` (29/29), exit 0.
+- Placeholder scan (TODO/FIXME/NotImplementedError/bare pass) across repo *.py excluding
+  venv/archive/research: **1 benign hit** — `job_train_ultimate_150.py:94` `pass` inside
+  `except Exception:` guarding an optional `nvidia-smi` subprocess probe. All other hits are
+  `.venv` site-packages noise. No placeholder/fake implementations in any wired path.
+- FIXES.md written (repo root, ~26KB) mapping every audit issue (12 P0 + all P1s) → root
+  cause → fix location → verification evidence, PLUS an explicit "Legacy / deferred items —
+  documented honestly (NOT claimed fixed)" section (eval/crisis_validation.py MockAgent +
+  placeholder P&L, scripts/generate_economic_calendar.py synthetic calendar, CI/pyproject,
+  dead research modules, missing model checkpoint).
+
+## Summary of pass counts / exit codes
+
+| Check | Result |
+|---|---|
+| pytest | 87 passed, 0 failed, exit 0 |
+| six gates ×2 | 12/12 runs exit 0 (24/33/29/26/29/23 both runs) |
+| P1 verify | 29/29, exit 0 |
+| live demo smoke | exit 0, fills=10 genuine order cycle |
+| pip check | No broken requirements found, exit 0 |
+| env cross-check | PASS (49 documented keys; 0 undocumented referenced keys) |
+| git check-ignore | .env, state/, logs/, KILL_SWITCH, artifacts/_smoke_state/ all ignored, exit 0 |

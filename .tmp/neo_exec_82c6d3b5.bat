@@ -1,0 +1,1 @@
+cd "e:\Desktop\NeoMind\Bazz\autonoumuse_trader" && powershell -Command "Get-ChildItem models, train, env -Filter *.py | Select-Object Directory,Name,@{N='KB';E={[math]::Round($_.Length/1KB,1)}} | Format-Table -AutoSize"

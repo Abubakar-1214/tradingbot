@@ -1,0 +1,1 @@
+powershell -Command "Select-String -LiteralPath 'e:\Desktop\NeoMind\Bazz\autonoumuse_trader\core\config.py' -Pattern 'correlation|RiskConfig|max_consecutive|min_trade_interval|event_position|vol_threshold|max_spread|initial_equity' | Select-Object -First 40 LineNumber,Line"

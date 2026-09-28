@@ -1,0 +1,1 @@
+call .venv\Scripts\activate.bat && python -m py_compile features\timeframe_features.py features\calendar_features.py features\macro_features.py features\make_features.py features\multi_timeframe.py

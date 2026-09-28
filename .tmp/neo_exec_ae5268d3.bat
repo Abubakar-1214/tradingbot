@@ -1,0 +1,1 @@
+powershell -Command "Get-Content -LiteralPath 'e:\Desktop\NeoMind\Bazz\autonoumuse_trader\models\risk_supervisor.py' | Select-Object -Skip 144 -First 14"

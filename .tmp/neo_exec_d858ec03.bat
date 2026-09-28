@@ -1,0 +1,1 @@
+powershell -Command "Get-Content -LiteralPath 'e:\Desktop\NeoMind\Bazz\autonoumuse_trader\data\xauusd_h1_from_m1.csv' -TotalCount 3; Write-Output '---D1---'; Get-Content -LiteralPath 'e:\Desktop\NeoMind\Bazz\autonoumuse_trader\data\xauusd_d1.csv' -TotalCount 2"

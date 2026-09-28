@@ -1,0 +1,1 @@
+powershell -Command "Select-String -LiteralPath 'e:\Desktop\NeoMind\Bazz\autonoumuse_trader\core\config.py' -Pattern 'dotenv|load_dotenv|env_file|getenv|environ' | Select-Object -First 30 LineNumber,Line"

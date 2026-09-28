@@ -1,0 +1,1 @@
+if exist scripts\verify_features.py (echo VERIFY_EXISTS & powershell -Command "(Get-Item 'scripts\verify_features.py').Length") else (echo VERIFY_MISSING)

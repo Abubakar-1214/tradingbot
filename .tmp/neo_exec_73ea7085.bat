@@ -1,0 +1,1 @@
+dir /b tests 2>nul & echo --- & dir /b scripts 2>nul

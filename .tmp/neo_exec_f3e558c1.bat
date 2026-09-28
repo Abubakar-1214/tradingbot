@@ -1,0 +1,1 @@
+dir /b research\backtest_results\full_eval_20260928_151139

@@ -1,0 +1,1 @@
+powershell -Command "$p='e:\Desktop\NeoMind\Bazz\autonoumuse_trader\core\feature_pipeline.py'; $c=Get-Content -Raw -LiteralPath $p; $n=$c -replace 'axis=1\)\.dropna\(\)','axis=1, sort=True).dropna()'; [IO.File]::WriteAllText($p,$n,[Text.UTF8Encoding]::new($false)); Write-Output ('REPLACED ' + ([regex]::Matches($n,'sort=True\)')).Count)"

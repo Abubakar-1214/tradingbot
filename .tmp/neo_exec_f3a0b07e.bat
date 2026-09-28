@@ -1,0 +1,1 @@
+powershell -Command "Select-String -LiteralPath 'e:\Desktop\NeoMind\Bazz\autonoumuse_trader\features\calendar_features.py' -Pattern 'searchsorted|for .* in .*events|np.searchsorted' | Select-Object -First 10 LineNumber,Line"

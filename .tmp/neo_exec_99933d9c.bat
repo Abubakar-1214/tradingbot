@@ -1,0 +1,1 @@
+powershell -Command "$r='e:\Desktop\NeoMind\Bazz\autonoumuse_trader'; $hits = Select-String -Path (Join-Path $r 'scripts\verify_*.py'),(Join-Path $r 'tests\*.py'),(Join-Path $r 'backtest\*.py') -Pattern 'crisis_validation|generate_economic_calendar' -ErrorAction SilentlyContinue; if($hits){$hits | ForEach-Object { $_.Filename + ':' + $_.LineNumber }}else{'__NO_REFERENCES__'}"

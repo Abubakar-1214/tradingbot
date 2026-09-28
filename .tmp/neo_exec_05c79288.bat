@@ -1,0 +1,1 @@
+dir e:\Desktop\NeoMind\Bazz\autonoumuse_trader

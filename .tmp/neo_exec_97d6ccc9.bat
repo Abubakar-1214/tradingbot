@@ -1,0 +1,1 @@
+powershell -Command "$f='e:\Desktop\NeoMind\Bazz\autonoumuse_trader\job_train_ultimate_150.py'; $c=Get-Content -LiteralPath $f; $s=[Math]::Max(1,94-6); $c | Select-Object -Skip ($s-1) -First 12"

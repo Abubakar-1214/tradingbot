@@ -1,0 +1,1 @@
+cd /d "e:\Desktop\NeoMind\Bazz\autonoumuse_trader" && powershell -NoProfile -Command "Select-String -Path 'FIXES.md' -Pattern '^## .*P1' | ForEach-Object { $_.Line }; Write-Output '--- P0 headers ---'; Select-String -Path 'FIXES.md' -Pattern '^## .*P0' | ForEach-Object { $_.Line }"

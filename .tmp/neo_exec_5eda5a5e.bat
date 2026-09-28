@@ -1,0 +1,1 @@
+powershell -Command "git -C 'e:\Desktop\NeoMind\Bazz\autonoumuse_trader' check-ignore -v .env state logs KILL_SWITCH artifacts\_smoke_state; Write-Output '---'; if(Test-Path -LiteralPath 'e:\Desktop\NeoMind\Bazz\autonoumuse_trader\.env'){'ENV_EXISTS'}else{'ENV_MISSING'}; $r=Get-Content -LiteralPath 'e:\Desktop\NeoMind\Bazz\autonoumuse_trader\.env' -TotalCount 40; $r"

@@ -1,0 +1,1 @@
+cd /d e:\Desktop\NeoMind\Bazz\autonoumuse_trader && if exist .venv\Scripts\python.exe (echo VENV_OK) else (echo NO_VENV) && if exist requirements.txt (type requirements.txt) else (echo NO_REQ) && if exist .env.example (echo ENV_EXAMPLE_OK) else (echo NO_ENV_EXAMPLE)

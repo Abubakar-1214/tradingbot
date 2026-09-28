@@ -1,0 +1,1 @@
+call .\venv\Scripts\activate.bat && python scripts\_fix_report_tmp.py

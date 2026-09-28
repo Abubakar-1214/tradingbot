@@ -1,0 +1,1 @@
+cd /d "e:\Desktop\NeoMind\Bazz\autonoumuse_trader" && git check-ignore -v .env state logs KILL_SWITCH artifacts/_smoke_state 2>&1 & echo EXITCODE=%ERRORLEVEL%

@@ -1,0 +1,1 @@
+powershell -Command "if(!(Test-Path -LiteralPath 'e:\Desktop\NeoMind\Bazz\autonoumuse_trader\docs\LIVE_VERIFICATION.md')){'__NO_LIVE_VERIF__'}else{'__HAS_LIVE_VERIF__'}"

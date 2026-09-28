@@ -1,28 +1,37 @@
 # Deep Reinforcement Learning
-stable-baselines3>=2.0.0
-torch>=2.0.0
-gymnasium>=0.29.0
+stable-baselines3==2.9.0
+torch==2.14.0
+gymnasium==1.3.0
 
 # Data Processing
-pandas>=2.0.0
-numpy>=1.24.0
+pandas==3.0.5
+numpy==2.5.3
+
+# Backtesting engine (kernc/backtesting.py — pinned; do not upgrade blindly)
+backtesting==0.6.2
 
 # Trading Platform Integration
-MetaTrader5>=5.0.0
+MetaTrader5==5.0.6231
+metaapi_cloud_sdk==29.1.1
+metaapi_cloud_copyfactory_sdk==12.0.0
+metaapi_cloud_metastats_sdk==6.0.0
 
 # Utilities
-tqdm>=4.65.0
-shimmy>=2.0.0
-python-dotenv>=1.0.0
+tqdm==4.70.1
+shimmy==2.0.1
+python-dotenv==1.2.3
 
 # Optional: For data fetching
-yfinance>=0.2.0
-requests>=2.31.0
+yfinance==1.7.0
+requests==2.34.2
 
 # Optional: For visualization
-matplotlib>=3.7.0
-seaborn>=0.12.0
+matplotlib==3.11.2
+seaborn==0.13.2
 
 # Optional: For advanced features
-scikit-learn>=1.3.0
-scipy>=1.11.0
+scikit-learn==1.9.1
+scipy==1.18.1
+
+# Testing (full suite must stay green)
+pytest==9.1.1

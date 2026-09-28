@@ -1,0 +1,1 @@
+cd "/app/e:\Desktop\NeoMind\Bazz\autonoumuse_trader" 2>/dev/null || cd "/app/e:/Desktop/NeoMind/Bazz/autonoumuse_trader" 2>/dev/null || cd /app; pwd; ls -la 2>/dev/null | head -50

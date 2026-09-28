@@ -1,0 +1,1 @@
+.venv\Scripts\python.exe -c "import backtesting, pkgutil; print([m.name for m in pkgutil.iter_modules(backtesting.__path__)])"

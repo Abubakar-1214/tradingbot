@@ -1,0 +1,1 @@
+powershell -Command "$root='e:\Desktop\NeoMind\Bazz\autonoumuse_trader'; $c = Get-Content -LiteralPath (Join-Path $root 'models_audit_report.md'); $i = 0; $inTable = $false; foreach($line in $c){ if($line -match '^\| # \|'){ $inTable = $true }; if($inTable){ Write-Host $line; if($line -match '^\| 9 \|'){ break } } }"

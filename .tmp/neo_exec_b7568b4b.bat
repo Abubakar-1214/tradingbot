@@ -1,0 +1,1 @@
+cd /d e:\Desktop\NeoMind\Bazz\autonoumuse_trader && .venv\Scripts\python.exe -m pip list 2>nul | findstr /i "pandas numpy backtesting dotenv pytest torch stable MetaTrader scikit matplotlib"

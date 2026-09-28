@@ -1,0 +1,1 @@
+python -c "import os; p=r'e:\Desktop\NeoMind\Bazz\autonoumuse_trader\models_audit_report.md'; print('exists:', os.path.exists(p)); print('size:', os.path.getsize(p) if os.path.exists(p) else 'N/A'); print('lines:', sum(1 for _ in open(p, encoding='utf-8', errors='replace')) if os.path.exists(p) else 'N/A')"

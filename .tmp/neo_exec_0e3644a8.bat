@@ -1,0 +1,1 @@
+call .venv\Scripts\activate.bat && python scripts\_ops_env_crosscheck.py

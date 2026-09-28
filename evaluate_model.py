@@ -26,7 +26,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-def evaluate_model(agent, env, timestamps):
+def evaluate_model(agent, env, timestamps, bars_per_year=72576):
     """
     Evaluate model on environment
 
@@ -72,11 +72,12 @@ def evaluate_model(agent, env, timestamps):
 
     total_return = (equity_curve[-1] - 1) * 100
 
-    # Annualized metrics (assuming 252 trading days)
-    days = len(equity_curve) / (252 * 24 * 12)  # Convert 5-min bars to years
+    # Annualized metrics (timeframe-correct bars-per-year; P1 audit fix —
+    # previously hardcoded 252*24*12 which silently assumed 5-minute bars)
+    days = len(equity_curve) / bars_per_year
     annual_return = ((equity_curve[-1] ** (1 / days)) - 1) * 100 if days > 0 else 0
 
-    sharpe = np.mean(returns) / (np.std(returns) + 1e-8) * np.sqrt(252 * 24 * 12)
+    sharpe = np.mean(returns) / (np.std(returns) + 1e-8) * np.sqrt(bars_per_year)
 
     # Max drawdown
     cummax = np.maximum.accumulate(equity_curve)
@@ -138,7 +139,7 @@ def plot_results(equity_curve, positions, dates, metrics, save_path='results.png
     axes[2].set_title(f'Positions - Long: {metrics["long_percentage"]:.1f}%', fontsize=14, fontweight='bold')
     axes[2].set_ylabel('Position', fontsize=12)
     axes[2].set_xlabel('Date', fontsize=12)
-    axes[2].set_ylim(-0.1, 1.1)
+    axes[2].set_ylim(-1.1, 1.1)  # long AND short visible (P1 audit fix)
     axes[2].grid(True, alpha=0.3)
 
     plt.tight_layout()
@@ -177,6 +178,10 @@ def main():
                        help='Evaluation period (validation=2022-2023, test=2024-2025, all=everything)')
     parser.add_argument('--save-plot', type=str, default='evaluation_results.png',
                        help='Path to save results plot')
+    parser.add_argument('--bars-per-year', type=float, default=None,
+                       help='Bars per trading year for annualization '
+                            '(default: 72576 = 252*24*12 for M5 bars; '
+                            'use 8760 for H1, 365 for D1)')
 
     args = parser.parse_args()
 
@@ -237,7 +242,9 @@ def main():
         return
 
     # ========== EVALUATE ==========
-    metrics, equity_curve, positions, dates = evaluate_model(agent, env, timestamps_eval)
+    bars_per_year = args.bars_per_year or 72576  # M5 default; override per timeframe
+    metrics, equity_curve, positions, dates = evaluate_model(
+        agent, env, timestamps_eval, bars_per_year=bars_per_year)
 
     # ========== PRINT RESULTS ==========
     print_metrics(metrics, title=f"EVALUATION RESULTS - {period_name}")

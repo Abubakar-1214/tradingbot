@@ -1,0 +1,1 @@
+powershell -Command "$f='e:\Desktop\NeoMind\Bazz\autonoumuse_trader\models\position_sizing.py'; if(!(Test-Path -LiteralPath $f)){'__NOFILE__'}else{$c=Get-Content -LiteralPath $f; '__READMETA__ '+$c.Count+' '+((Get-Item -LiteralPath $f).Length); $c | Select-Object -Skip 0 -First 800}"

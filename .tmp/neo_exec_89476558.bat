@@ -1,0 +1,1 @@
+powershell -Command "$f='e:\Desktop\NeoMind\Bazz\autonoumuse_trader\models\risk_supervisor.py'; $c=Get-Content -LiteralPath $f; ($c | Select-String -Pattern 'sqlite3|risk_state|def check_trade' | Select-Object -First 8) | ForEach-Object { $_.Line.Trim() }"

@@ -1,0 +1,1 @@
+call .venv\Scripts\activate.bat && python -m py_compile models\risk_supervisor.py scripts\verify_risk.py && python scripts\verify_risk.py

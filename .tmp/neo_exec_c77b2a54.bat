@@ -1,0 +1,1 @@
+dir /b .venv\Scripts\ 2>nul | findstr /i "activate python" & echo --- & python --version

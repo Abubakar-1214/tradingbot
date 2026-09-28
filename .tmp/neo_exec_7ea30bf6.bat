@@ -1,0 +1,1 @@
+cd /d e:\Desktop\NeoMind\Bazz\autonoumuse_trader && echo ---REQ--- && type requirements.txt 2>nul && echo ---ENVEX--- && type .env.example 2>nul

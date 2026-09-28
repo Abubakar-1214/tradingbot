@@ -1,0 +1,1 @@
+powershell -Command "$f='e:\Desktop\NeoMind\Bazz\autonoumuse_trader\.venv\Lib\site-packages\backtesting\backtesting.py'; Select-String -LiteralPath $f -Pattern 'self.spread|self.commission|self._commission|_spread' | Select-Object -First 30 | ForEach-Object { $_.LineNumber.ToString() + ': ' + $_.Line.Trim() }"

@@ -1,0 +1,1 @@
+powershell -Command "$f='e:\Desktop\NeoMind\Bazz\autonoumuse_trader\data\xauusd_d1.csv'; Get-Content -LiteralPath $f -TotalCount 3; '---'; $f2='e:\Desktop\NeoMind\Bazz\autonoumuse_trader\data\xauusd_h1_from_m1.csv'; Get-Content -LiteralPath $f2 -TotalCount 3; '---'; $f3='e:\Desktop\NeoMind\Bazz\autonoumuse_trader\data\macro_daily.csv'; Get-Content -LiteralPath $f3 -TotalCount 3"

@@ -1,0 +1,1 @@
+cd /d "e:\Desktop\NeoMind\Bazz\autonoumuse_trader" && powershell -NoProfile -Command "Select-String -Path 'artifacts\gate_evidence.txt' -Pattern 'run 1/2 exit=|run 2/2 exit=|RESULT:' | ForEach-Object { $_.Line }"

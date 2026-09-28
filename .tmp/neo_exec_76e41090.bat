@@ -1,0 +1,1 @@
+powershell -Command "$r='e:\Desktop\NeoMind\Bazz\autonoumuse_trader'; Select-String -Path (Join-Path $r 'data\sentiment_analysis.py'),(Join-Path $r 'features\god_mode_features.py') -Pattern '0.0|placeholder|sentiment' | Select-Object -First 8 | ForEach-Object { $_.Filename + ':' + $_.LineNumber + ' ' + $_.Line.Trim() }"

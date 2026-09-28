@@ -1,0 +1,1 @@
+cd /d "e:\Desktop\NeoMind\Bazz\autonoumuse_trader" && type requirements.txt

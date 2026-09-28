@@ -1,0 +1,1 @@
+powershell -Command "Get-Content -LiteralPath 'e:\Desktop\NeoMind\Bazz\autonoumuse_trader\README.md' -TotalCount 80"

@@ -1,0 +1,1 @@
+cd /d "e:\Desktop\NeoMind\Bazz\autonoumuse_trader" && powershell -NoProfile -Command "$f=Get-Content 'FIXES.md' -Raw; Write-Output ('P0-10: ' + $f.Contains('P0-10')); Write-Output ('P0-11: ' + $f.Contains('P0-11')); Write-Output ('P0-12: ' + $f.Contains('P0-12')); Write-Output ('P1 count check: ' + (([regex]::Matches($f,'P1-')).Count))"

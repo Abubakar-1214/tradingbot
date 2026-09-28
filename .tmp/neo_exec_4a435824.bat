@@ -1,0 +1,1 @@
+powershell -Command "$root='e:\Desktop\NeoMind\Bazz\autonoumuse_trader'; Get-ChildItem -LiteralPath $root -Recurse -Directory -Filter .kiro -ErrorAction SilentlyContinue | Select-Object FullName; Get-ChildItem -LiteralPath $root -Recurse -Directory -Filter .qoder -ErrorAction SilentlyContinue | Select-Object FullName"

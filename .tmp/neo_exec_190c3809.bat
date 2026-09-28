@@ -1,0 +1,1 @@
+call .venv\Scripts\activate.bat && python scripts\_patch_p1_load.py && python scripts\_verify_p1_fixes.py

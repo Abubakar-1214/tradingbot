@@ -1,0 +1,1 @@
+powershell -Command "Get-ChildItem -Path 'e:\Desktop\NeoMind\Bazz\autonoumuse_trader' -Filter 'test_*.py' -Recurse -Depth 2 | Select-Object -ExpandProperty FullName"

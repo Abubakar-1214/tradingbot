@@ -64,9 +64,39 @@ class ReplayBuffer:
         if self.size < self.seq_len + 1:
             return None
 
-        # Logical index 0 is the oldest transition
+        # Logical index 0 is the oldest transition.  Build logical-order done
+        # flags for the valid region (ring order -> chronological order).
         oldest = (self.ptr - self.size) % self.capacity
-        starts = np.random.randint(0, self.size - self.seq_len, size=batch_size)
+        if oldest <= self.ptr - 1:  # no ring wrap in the valid region
+            done_logical = self.done[oldest:self.ptr]
+        else:
+            done_logical = np.concatenate(
+                [self.done[oldest:], self.done[:self.ptr]]
+            )
+
+        # Episode-boundary guard (P1 audit fix): a sampled sequence of length
+        # seq_len never CROSSES a done=True boundary — a done flag may only
+        # appear at the FINAL position of the sequence (the transition that
+        # terminated the episode).  Valid starts are found vectorized with a
+        # prefix-sum window count: start s is valid iff no done appears in
+        # [s, s+seq_len-2].  O(capacity) regardless of batch_size.
+        window = self.seq_len - 1
+        prefix = np.zeros(self.size + 1, dtype=np.int64)
+        np.cumsum(done_logical, out=prefix[1:])
+        if window > 0:
+            counts = prefix[window:] - prefix[:-window]
+        else:
+            counts = np.zeros(self.size, dtype=np.int64)
+        max_start = self.size - self.seq_len
+        valid = np.flatnonzero(counts[:max_start + 1] == 0)
+        if len(valid) == 0:
+            # Degenerate case: episodes are shorter than seq_len, so no
+            # sequence of seq_len transitions can avoid crossing a done=True
+            # boundary.  Refuse to sample (train_step skips the step) rather
+            # than emit sequences that violate the episode-boundary guard.
+            return None
+
+        starts = valid[np.random.randint(0, len(valid), size=batch_size)]
         idx = (oldest + starts[:, None] + np.arange(self.seq_len)[None, :]) % self.capacity
 
         return {
@@ -397,7 +427,13 @@ class DreamerV3Agent:
                 p_slow.lerp_(p, self.slow_critic_tau)
 
     def save(self, path):
-        """Save agent"""
+        """Save agent — FULL training state (P1 audit fix).
+
+        Persists network weights, optimizer state (world_model/actor/critic),
+        the return normalizer (5th/95th percentile EMA used by
+        _normalize_returns), torch + numpy RNG states and the training step so
+        a resumed run continues deterministically from the checkpoint.
+        """
         torch.save({
             'encoder': self.encoder.state_dict(),
             'rssm': self.rssm.state_dict(),
@@ -406,12 +442,29 @@ class DreamerV3Agent:
             'actor': self.actor.state_dict(),
             'critic': self.critic.state_dict(),
             'slow_critic': self.slow_critic.state_dict(),
+            'optimizer_world_model': self.optimizer_world_model.state_dict(),
+            'optimizer_actor': self.optimizer_actor.state_dict(),
+            'optimizer_critic': self.optimizer_critic.state_dict(),
+            'return_low': self.return_low,
+            'return_high': self.return_high,
             'training_step': self.training_step,
+            'rng_torch': torch.get_rng_state(),
+            'rng_numpy': np.random.get_state(),
         }, path)
 
     def load(self, path):
-        """Load agent"""
-        checkpoint = torch.load(path, map_location=self.device)
+        """Load agent — restores the FULL training state (P1 audit fix).
+
+        Backward compatible: checkpoints written by the old implementation
+        (networks + training_step only) load with defaults for the new keys.
+        """
+        # Full training checkpoints contain optimizer + numpy RNG state,
+        # which torch.load()'s default weights_only=True rejects.
+        # These are trusted local artifacts, so weights_only=False is
+        # the correct (standard) setting for training checkpoints.
+        checkpoint = torch.load(
+            path, map_location=self.device, weights_only=False
+        )
         self.encoder.load_state_dict(checkpoint['encoder'])
         self.rssm.load_state_dict(checkpoint['rssm'])
         self.decoder.load_state_dict(checkpoint['decoder'])
@@ -419,7 +472,19 @@ class DreamerV3Agent:
         self.actor.load_state_dict(checkpoint['actor'])
         self.critic.load_state_dict(checkpoint['critic'])
         self.slow_critic.load_state_dict(checkpoint.get('slow_critic', checkpoint['critic']))
+        if 'optimizer_world_model' in checkpoint:
+            self.optimizer_world_model.load_state_dict(checkpoint['optimizer_world_model'])
+        if 'optimizer_actor' in checkpoint:
+            self.optimizer_actor.load_state_dict(checkpoint['optimizer_actor'])
+        if 'optimizer_critic' in checkpoint:
+            self.optimizer_critic.load_state_dict(checkpoint['optimizer_critic'])
+        self.return_low = checkpoint.get('return_low')
+        self.return_high = checkpoint.get('return_high')
         self.training_step = checkpoint.get('training_step', 0)
+        if 'rng_torch' in checkpoint:
+            torch.set_rng_state(checkpoint['rng_torch'])
+        if 'rng_numpy' in checkpoint:
+            np.random.set_state(checkpoint['rng_numpy'])
         print(f"Loaded checkpoint from step {self.training_step}")
 
 

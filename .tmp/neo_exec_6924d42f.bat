@@ -1,0 +1,1 @@
+powershell -Command "$root='e:\Desktop\NeoMind\Bazz\autonoumuse_trader'; $f = Join-Path $root 'models\dreamer_agent.py'; $c = Get-Content -LiteralPath $f; for($i=0;$i -lt $c.Count;$i++){ if($c[$i] -match 'def act\('){ Write-Host ('act def at line ' + ($i+1)); for($j=$i;$j -lt [Math]::Min($i+45,$c.Count);$j++){ Write-Host (($j+1).ToString() + ': ' + $c[$j]) }; break } }"

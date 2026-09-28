@@ -1,0 +1,1 @@
+cd /d e:\Desktop\NeoMind\Bazz\autonoumuse_trader && python -c "lines=open('models/meta_learning.py',encoding='utf-8',errors='replace').read().splitlines(); print('META 166-171:'); [print(i+1,lines[i]) for i in range(165,171) if i<len(lines)]; print('META 248-259:'); [print(i+1,lines[i]) for i in range(247,259) if i<len(lines)]"

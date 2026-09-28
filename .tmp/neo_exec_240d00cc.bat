@@ -1,0 +1,1 @@
+dir /s /b *.py 2>nul | findstr /v "\\venv\\ \\archive\\ \\__pycache__\\"

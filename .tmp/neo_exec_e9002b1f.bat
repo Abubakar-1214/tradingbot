@@ -1,0 +1,1 @@
+call .venv\Scripts\activate.bat && python scripts\probe_pandas.py

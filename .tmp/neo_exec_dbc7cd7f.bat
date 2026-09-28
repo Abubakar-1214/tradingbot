@@ -1,0 +1,1 @@
+powershell -Command "$p='e:\Desktop\NeoMind\Bazz\autonoumuse_trader\features\macro_features.py'; Select-String -LiteralPath $p -Pattern 'reindex' | ForEach-Object { $_.LineNumber.ToString() + ': ' + $_.Line }"

@@ -1,0 +1,1 @@
+cd "e:\Desktop\NeoMind\Bazz\autonoumuse_trader" && powershell -Command "Get-Content -LiteralPath 'requirements.txt'"

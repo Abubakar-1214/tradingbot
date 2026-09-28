@@ -1,0 +1,241 @@
+Tradingbot repo audit — production readiness report
+Tradingbot repo audit — production readiness report
+Abubakar-1214/tradingbot ka file-by-file jaiza: kya wired hai, kya toota hua hai, aur production ready banane ka roadmap (Roman Urdu).
+Something in this artifact failed to run
+The content below is still readable, but an interactive control may
+not respond.
+1. Seedha jawab (verdict)
+Yeh project abhi production ready nahi hai, aur asli paison se chalana khatarnak hai.
+Research side kaafi mazboot hai — DreamerV3 world model, realistic trading environment (jo costs, spread, slippage, swap, stop-loss aur drawdown handle karta hai), 150+ features ka pipeline, risk supervisor, Kelly sizing, ensemble, MCTS. Lekin in sab ko jodne wali "asli wiring" mojood nahi hai: live bot model ke ilawa kisi bhi safety component ko call hi nahi karta, backtester random numbers par chalta hai, aur features mein look-ahead (future ka data) leak ho raha hai.
+Overall readiness
+~35%
+Research strong, production wiring missing
+Python files / lines
+51 / 12,800
+1 test file (13 tests, sab pass)
+P0 blockers
+12
+Real money se pehle lazmi fix
+CI / Docker / lint
+0
+Koi automation nahi
+Sab se bara single bug:   models/risk_supervisor.py  mein action ko position size samjha gaya hai
+( position_size = abs(action) ). Maine chala kar dekha:  check_trade(1, ...)  ka jawab aata hai
+(False, 'POSITION_TOO_LARGE: 100.00% > 10.00%') . Yani agar risk supervisor ko live bot se jod bhi dein,
+to bot kabhi ek bhi trade nahi lega. Aur abhi to woh jura hi nahi hua.
+2. Repo ka naqsha — kya kya mojood hai
+Repository modules aur unki halat
+Folder
+Ahem files
+Halat
+data/
+load_data.py, merge_macro.py, economic_calendar.py, sentiment_analysis.py, fetch_correlations.py
+Loader theek, sentiment placeholder (hamesha 0.0)
+features/
+make_features.py, ultimate_150_features.py, timeframe_features.py, macro_features.py, calendar_features.py, microstructure.py, god_mode_features.py, multi_timeframe.py
+Chalta hai lekin leakage + speed masail
+env/
+dreamer_trading_env.py, xauusd_env.py, realistic_execution.py, test_dreamer_trading_env.py
+Sab se acha hissa — 13 tests pass
+models/
+dreamer_agent.py, dreamer_components.py, risk_supervisor.py, position_sizing.py, ensemble.py, mcts.py, meta_learning.py, transformer_policy.py, adversarial_training.py
+Dreamer chalta hai; baqi 6 modules kahin use nahi ho rahe
+train/
+train_dreamer.py, train_ultimate_150.py, train_ppo.py, train_ppo_aggressive.py, train_god_mode.py
+Chalte hain, lekin validation/promotion gate nahi
+backtest/
+backtest_engine.py
+Toota hua — random observations
+eval/
+crisis_validation.py, baselines.py, eval_ppo.py, analyze_dreamer.py, quick_test.py
+Adhura — MockAgent aur placeholder P&L
+live/
+live_trade_mt5.py, live_trade_metaapi.py
+Sab se kamzor — koi safety nahi
+scripts/
+fetch_all_data.py, resample_m1_to_all_timeframes.py, generate_economic_calendar.py
+Chalte hain; calendar synthetic hai
+.kiro/specs/
+design.md (AutonomousOrchestrator)
+Sirf design — code mein kuch nahi
+Data CSVs repo mein nahi hain (gitignored). Is liye fresh clone par 150-feature pipeline, training aur evaluation direct nahi chal sakte.
+3. Kya "wired" hai aur kya nahi
+Component wiring matrix
+Component wiring status
+Component
+Code mojood?
+Training mein wired?
+Live mein wired?
+DreamerV3 agent
+Haan
+Haan
+Nahi  — live sirf purana PPO  .zip  load karta hai
+RealisticTradingEnv (costs/SL/swap)
+Haan
+Haan
+Nahi
+RiskSupervisor
+Haan (buggy)
+Nahi
+Nahi  — dono live files mein import tak nahi
+KellyPositionSizer
+Haan
+Nahi
+Nahi  — live lot hardcoded 0.01
+RealisticExecutionModel
+Haan
+Nahi
+Nahi
+Ensemble / MCTS / Transformer / MAML / Adversarial
+Haan
+Nahi
+Nahi  — dead code
+150+ feature pipeline
+Haan
+Haan
+Nahi  — live sirf ~20 basic features banata hai
+Economic calendar features
+Haan (synthetic)
+Haan
+Nahi
+Backtest engine
+Haan
+Toota hua
+—
+Crisis validation
+Haan
+Adhura (MockAgent)
+—
+Monitoring / alerts / kill switch
+Nahi
+—
+Nahi
+State persistence / reconciliation
+Nahi
+—
+Nahi
+4. P0 — jab tak yeh fix na hon, asli paisa bilkul nahi
+01
+Live bot ke paas koi risk control nahi
+Critical
+live/live_trade_mt5.py  aur  live/live_trade_metaapi.py  mein: koi stop-loss nahi, koi take-profit nahi, daily loss limit nahi, max drawdown check nahi, consecutive-loss breaker nahi, aur  RiskSupervisor  import tak nahi hua. Lot size hardcoded  VOLUME = 0.01 . Agar model ghalat side pakar le, account ko rokne wali koi cheez nahi hai.
+02
+RiskSupervisor khud buggy hai
+Critical
+Action index (0/1/2) ko position fraction maan liya gaya hai, is liye har long trade "POSITION_TOO_LARGE" keh kar reject hota hai (maine chala kar verify kiya). Iske ilawa state sirf memory mein hai — process restart hote hi daily loss counter, drawdown aur consecutive losses zero ho jate hain, yani restart karke aap apne hi circuit breaker ko bypass kar dete hain. Correlation rule bhi hardcoded hai (DXY upar ho to long block).
+03
+Train aur live ke features bilkul match nahi karte
+Critical
+Training 150+ features (M5 base, multi-timeframe + macro + calendar) par hoti hai, jabke live script  features.make_features.compute_features  se sirf basic features banata hai aur PPO ka  train/ppo_xauusd_latest.zip  load karta hai. Upar se normalization: training mein poore dataset ke mean/std, live mein sirf aakhri 200 bars ke mean/std. Yani live par model ko woh numbers milte hain jin par woh train hi nahi hua — output bekar hoga. Feature schema + scaler ko model ke sath save karna lazmi hai.
+04
+Look-ahead bias (future ka data leak)
+Critical
+Teen alag jagah:
+Multi-timeframe   resample  bar ko uske  shuru  ke waqt par label karta hai, phir H1/H4/D1 features ko M5 par  ffill  kar diya jata hai. Matlab 10:00 wale M5 bar ko us H1 candle ka close mil raha hai jo 11:00 par band hoga — yeh future ka data hai.
+Macro daily  DXY/SPX/VIX ka daily close 00:00 par stamp ho kar poore din mein ffill hota hai, yani din ke shuru mein hi us din ka close pata chal jata hai.
+Normalization   features/make_features.py  poore dataset (train+test) ke mean/std se normalize karta hai — test period ke statistics train mein leak ho jate hain.
+Isi wajah se koi bhi purana backtest result ya "Sharpe 3.5+" wala claim abhi qabil-e-aitbaar nahi hai. Feature layer theek karne ke baad sab kuch dobara train aur evaluate karna hoga.
+05
+Backtester asal mein backtest karta hi nahi
+Critical
+backtest/backtest_engine.py  ka  _get_observation()   np.random.randn(100)  return karta hai, aur  walk_forward_validation()  mein training line comment ki hui hai ( # self.agent.train(train_data) ). Naam "RigorousBacktester" hai lekin natija random noise par bana hota hai.  eval/crisis_validation.py  bhi placeholder P&L aur MockAgent par khara hai.
+06
+Execution loop galat hai
+Critical
+10 second loop  H1 strategy hote hue bhi loop har 10 second chalta hai — ek hi candle par 360 dafa faisla, adhi-bani candle par. "Candle band hone" ka gate nahi hai.
+Adhura candle  MT5 se aane wala aakhri bar abhi mukammal nahi hota, lekin usi par decision ho raha hai.
+Sirf long/flat  Live mein short bilkul nahi, jabke Dreamer env  allow_short=True  ke sath train hota hai.
+Order result  MT5 retcode ki poori checking, retry, partial fill aur requote handling nahi. Idempotency (duplicate order se bachao) nahi.
+Reconciliation  Broker par asal position aur bot ki soch ko match karne wala koi code nahi. Restart ke baad bot ko pata nahi hota usne pehle kya kiya tha.
+07
+Config aur dependencies adhuri
+High
+.env use hi nahi hota   .env.example  mein  SYMBOL ,  VOLUME ,  MAX_RISK_PER_TRADE ,  MAX_DAILY_LOSS ,  MAX_POSITIONS  hain, lekin MT5 script inn mein se kuch nahi parhta — sab values file ke andar hardcoded hain. Risk wale variables to kahin bhi use nahi hote.
+Missing dependency   live/live_trade_metaapi.py   metaapi_cloud_sdk  import karta hai lekin woh  requirements.txt  mein nahi hai.
+Versions pinned nahi  Sab  >=  hai, koi lock file nahi — kal ka install aaj se mukhtalif hoga.
+Missing files  README  train/smoke_env.py  chalane ko kehta hai, DEPLOYMENT_GUIDE  deploy_setup.sh  aur  trading-bot.service  upload karne ko kehta hai — teeno repo mein mojood hi nahi.
+5. P1 — quality aur bharosay ke masail
+P1 issues
+Jagah
+Masla
+Asar
+models/dreamer_agent.py  —  save()
+Sirf network weights save hote hain; optimizer state, RNG, return-normalizer, feature schema aur env config nahi
+Resume aur reproducibility tooti hui; kaunsa model kis data par bana, pata nahi chalta
+ReplayBuffer.sample()
+Contiguous sequence lete waqt episode boundary cross ho sakti hai
+World model ghalat transitions seekhta hai
+models/position_sizing.py  —  dynamic_sizing()
+rssm.observe()  ko galat arguments/returns ke sath call karta hai (RSSM 4 values return karta hai), aur  value_long = value_flat  hai to advantage hamesha 0, win_prob hamesha 0.5
+Function chalega hi nahi; chal gaya to bemani
+features/calendar_features.py
+Har timestamp par poori event list par Python loop (O(N×E))
+~1M M5 bars par ghantoon lagenge;  searchsorted  se seconds mein ho sakta hai
+scripts/generate_economic_calendar.py
+Events rule-based banaye gaye hain (NFP = har mahine pehla Friday, fixed 13:30 UTC), asal actual/forecast/surprise values nahi, DST ignore
+Calendar features asal duniya se thora hut kar hain
+data/sentiment_analysis.py ,  features/god_mode_features.py
+Sentiment hamesha 0.0; calendar features constant placeholders
+Feature count barha hua lagta hai, information nahi
+evaluate_model.py
+Annualization  252×24×12  5-min bars maan kar; plot  ylim(-0.1, 1.1)  — short positions dikhte hi nahi
+Metrics overstate ho sakte hain
+features/timeframe_features.py
+volume  column chahiye, jabke MT5 loader  tick_volume  deta hai
+Runtime KeyError / khamosh galat features
+Poora repo
+Sirf 1 test file (env), no CI, no Dockerfile, no lint/format config, no logging/metrics/alerting
+Har change par regression ka khatra
+6. Documentation aur haqiqat mein farq
+README mein likha hai ke risk management, MT5/MetaAPI integration aur risk integration "complete" hain, aur 80–120% annual return / Sharpe 3.5–4.5 ke targets diye gaye hain. Code mein inn claims ka support nahi milta: risk layer live mein juri hui nahi, aur jin backtests se yeh numbers aate, woh engine random observations par chalta hai. README ke issue links bhi kisi doosre owner/repo ki taraf jate hain. Meri guzarish: README mein "status: research / not production ready" saaf likhein, warna future mein aap khud (ya koi aur) in numbers par bharosa kar baithega.
+.kiro/specs/autonomous-trading-ai/design.md  mein AutonomousOrchestrator ka bohot acha blueprint hai (data → features → regime → decision → risk → execution → monitoring). Lekin abhi tak yeh sirf document hai —  orchestrator  naam ki koi cheez code mein nahi.
+7. Achi cheezein (yeh mat torna)
+env/dreamer_trading_env.py  — realistic costs, spread, adverse slippage, swap rollover, stop-loss, max drawdown, event mask, causal observation (t-1 tak data, t ke open par fill). Yeh professional level ka simulator hai.
+env/test_dreamer_trading_env.py  — 13 tests, sab pass hue (causality, cost accounting, SL, swap, drawdown). Yahi repo ka standard baqi code ke liye bhi hona chahiye.
+models/dreamer_components.py  /  dreamer_agent.py  — RSSM, symlog, two-hot critic, imagination rollouts — DreamerV3 ka theek-thaak implementation.
+Feature engineering ki wusat (multi-timeframe, macro, microstructure) aur data resampling scripts.
+SECURITY.md  aur  .gitignore  — secrets, keys, models, data sab ignore hain; koi credential repo mein commit nahi mila.
+8. Roadmap — kis tarteeb se complete karna hai
+P0
+Safety aur correctness (pehle yeh)
+1–2 hafte kaam
+Live trading ko abhi ke liye  demo-only  lock karein: ek env flag  TRADING_MODE=demo|live , aur live mode tab tak error de jab tak sab gates pass na hon.
+RiskSupervisor  ka position-size bug fix karein (action ≠ size), state ko disk/SQLite par persist karein, aur usay dono live scripts mein har order se pehle lazmi banayein.
+Feature contract banayein: training ke waqt  feature_names  + scaler (mean/std)  scaler.json  mein save, live par wahi load. Mismatch par bot start hi na ho.
+Look-ahead fix: higher timeframe features ko ek bar  shift(1)  karein (ya  label='right', closed='right'  se resample karein), macro daily ko bhi shift karein, aur normalization sirf train window par fit karein.
+Live loop theek karein: sirf band hui candle par decision, candle-aligned sleep, duplicate-order guard (client order id), SL/TP har order ke sath, order result ki poori checking + retry.
+Startup par broker se position reconcile karein; local state aur broker state alag hon to trade band aur alert.
+Dono live scripts ko ek hi core mein merge karein (strategy + risk + execution alag layers, broker adapter interchangeable).
+metaapi_cloud_sdk  requirements mein add karein aur versions pin karein.
+P1
+Sach bolne wala evaluation aur operations
+2–3 hafte kaam
+Backtester dobara likhein — placeholder observations hata kar wahi  RealisticTradingEnv  aur wahi feature pipeline use karein jo training mein hai.
+Walk-forward validation asal mein chalayein (train → validate → test, purge/embargo ke sath), aur baselines (buy&hold, random, simple MA) ke against compare karein.
+Crisis validation ko asal agent + asal env par chalayein, MockAgent hatayein.
+Model registry + promotion gate: checkpoint ke sath metrics, data range, feature hash, git commit; sirf gate pass model hi live ja sake.
+Observability: structured logs, har trade ka audit record, equity/drawdown metrics, heartbeat, Telegram/email alerts, aur ek manual kill switch file/flag.
+Deployment: Dockerfile + systemd unit + GitHub Actions (lint, tests) — abhi teeno mein se kuch bhi nahi.
+Tests barhayein: risk supervisor, feature causality, execution adapter (mock broker), reconciliation.
+P2
+Alpha aur scale (sirf P0/P1 ke baad)
+Baad mein
+Kelly sizing ko theek kar ke dynamic lot size (abhi fix 0.01).
+Ensemble / MCTS / Transformer / MAML ko orchestrator mein jorna — pehle backtest mein sabit karein ke faida deti hain.
+Asal economic calendar API (actual vs forecast, DST-aware) aur asal sentiment feed.
+.kiro wala AutonomousOrchestrator banana, regime detection ke sath.
+Dashboard, multi-symbol, hyperparameter search.
+9. Go-live gates — kab agla qadam lena hai
+Deployment gates
+Stage
+Shart poori honi chahiye
+Backtest
+Leakage fix ho chuki ho; walk-forward out-of-sample (2022+) par realistic costs ke sath positive risk-adjusted return; baselines se behtar; crisis periods survive
+Demo / paper
+Kam az kam 4–8 hafte demo account par bila crash; reconciliation mein zero mismatch; live P&L aur backtest P&L ka fark explainable; risk supervisor se rejections logs mein nazar aayein
+Chhota real capital
+Sirf woh raqam jo poori doob sakti hai; minimum lot; daily loss limit + kill switch tested; alerts phone par aate hon; rozana manual review
+Scale up
+3+ mahine ka live track record demo ke mutabiq; monitoring mature; incident runbook mojood
+Mera mashwara:  agla kaam feature nahi, safety hai. Tarteeb: (1) risk supervisor bug + wiring, (2) feature/scaler contract, (3) look-ahead fix aur dobara training, (4) asal backtester, (5) demo par 1 mahina. Agar chahein to main P0 items ko ek ek kar ke code mein implement karke PR bana sakta hoon — bas ijazat de dein.
+Source: Abubakar-1214/tradingbot ka main branch (24 Sep 2026 ko clone kiya gaya), 51 Python files ka source-level review, env test suite chalayi gayi (13/13 pass), aur RiskSupervisor ka bug run kar ke verify kiya gaya. Koi code change nahi kiya gaya. Backtest/performance numbers sirf README ke claims hain, verified nahi.

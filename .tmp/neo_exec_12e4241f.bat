@@ -1,0 +1,1 @@
+.venv\Scripts\python.exe -c "import backtesting; print(backtesting.__version__)"

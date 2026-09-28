@@ -424,7 +424,7 @@ def compute_macro_features(df_gold, macro_dict):
         macro_features_daily = macro_features_daily.fillna(0.0)
 
         # Align back to original gold timeframe (forward-fill daily data)
-        macro_features = macro_features_daily.reindex(df_gold.index, method='ffill')
+        macro_features = macro_features_daily.shift(1).reindex(df_gold.index, method='ffill')
         macro_features = macro_features.fillna(0.0)
     else:
         # No macro data available

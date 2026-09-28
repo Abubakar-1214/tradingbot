@@ -1,0 +1,1 @@
+cd e:\Desktop\NeoMind\Bazz\autonoumuse_trader && dir /s /b train artifacts state live backtest eval 2>nul

@@ -145,27 +145,33 @@ class KellyPositionSizer:
             # Encode observation
             embed = agent.encoder(obs_tensor)
 
-            # Get posterior state
-            h, z_dist = agent.rssm.observe(embed, None, h, z)
-            z = z_dist.sample()
+            # Posterior inference: RSSM.observe returns FOUR values
+            # (h, z, prior_logits, posterior_logits); z is ALREADY the
+            # posterior sample.  Passing action=None and re-sampling from a
+            # distribution object was the P1 bug (wrong args + 2-tuple unpack).
+            prev_action = getattr(agent, 'prev_action', None)
+            if prev_action is None:
+                prev_action = torch.zeros(1, agent.action_dim, device=agent.device)
+                prev_action[0, 0] = 1.0  # flat
+            h, z, _prior, _posterior = agent.rssm.observe(
+                embed, prev_action, h, z
+            )
 
-            # Flatten z for critic
-            z_flat = z.reshape(z.shape[0], -1)
+            # Value of the CURRENT state (staying flat)
+            state = agent.rssm.get_state(h, z)
+            value_flat = agent.critic(state)
 
-            # Concatenate h and z for critic input
-            state = torch.cat([h, z_flat], dim=-1)
+            # Value AFTER taking the LONG action: imagine one step forward in
+            # the world model (prior dynamics), then critic at the new state.
+            # Previously value_long = value_flat made advantage always 0 and
+            # win_prob always 0.5 (P1 audit fix).
+            long_action = torch.zeros(1, agent.action_dim, device=agent.device)
+            long_action[0, 1] = 1.0  # long
+            h_next, z_next, _prior_next = agent.rssm.imagine(long_action, h, z)
+            state_long = agent.rssm.get_state(h_next, z_next)
+            value_long = agent.critic(state_long)
 
-            # Get action logits from actor
-            action_logits = agent.actor(state)
-            action_probs = torch.softmax(action_logits, dim=-1)
-
-            # Get values for each action
-            # For binary action (flat=0, long=1):
-            value_flat = agent.critic(state)  # Value of current state
-            # Estimate value if we go long (approximate)
-            value_long = value_flat  # Simplified - in practice, simulate forward
-
-            # Expected advantage
+            # Expected advantage of going long vs staying flat (REAL quantity)
             advantage = value_long - value_flat
 
             # Convert to probability using sigmoid

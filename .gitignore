@@ -3,6 +3,7 @@ __pycache__/
 *.py[cod]
 *$py.class
 *.so
+.temp
 .qoder
 .kilocode
 .Python
@@ -29,6 +30,14 @@ data/*.json
 train/ppo_*.zip
 train/dreamer*/
 train/dreamer_ultimate/
+
+# Trading runtime state (created lazily by live loop / risk supervisor)
+state/
+logs/
+KILL_SWITCH
+
+# Smoke-test runtime state (disposable, regenerated per run)
+artifacts/_smoke_state/
 
 # Logs
 *.log

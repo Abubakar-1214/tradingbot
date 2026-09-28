@@ -1,0 +1,1 @@
+cd /d e:\Desktop\NeoMind\Bazz\autonoumuse_trader && dir /b data & echo --- & .venv\Scripts\python.exe -m pip show backtesting 2>nul | findstr "Name Version"

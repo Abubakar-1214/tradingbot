@@ -1,0 +1,27 @@
+{
+  "created": "20260928_151139",
+  "cost_model": "one-way spread=0.000175 (= round-trip 0.000350), commission/side=0.000030, slippage/fill=0.000050, round-trip total=0.000410",
+  "seed": 42,
+  "runs": [
+    "SmaCrossAtr|xauusd_d1",
+    "RsiReversion|xauusd_d1",
+    "DonchianBreakout|xauusd_d1",
+    "SmaCrossAtr_zero_cost|xauusd_d1",
+    "SmaCrossAtr|xauusd_h1_from_m1",
+    "RsiReversion|xauusd_h1_from_m1",
+    "DonchianBreakout|xauusd_h1_from_m1",
+    "SmaCrossAtr_zero_cost|xauusd_h1_from_m1"
+  ],
+  "baselines": [
+    "BuyHold|xauusd_d1",
+    "SeededRandom|xauusd_d1",
+    "BuyHold|xauusd_h1_from_m1",
+    "SeededRandom|xauusd_h1_from_m1"
+  ],
+  "walk_forward": {
+    "method": "purge+embargo (train 1200 / test 400 / embargo 25)",
+    "datasets": [
+      "xauusd_d1"
+    ]
+  }
+}

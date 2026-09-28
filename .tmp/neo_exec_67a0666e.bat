@@ -1,0 +1,1 @@
+powershell -Command "$r='e:\Desktop\NeoMind\Bazz\autonoumuse_trader'; @('artifacts\ops_evidence.txt','artifacts\pytest_final.txt','artifacts\gate_evidence.txt','artifacts\live_demo_smoke.txt') | ForEach-Object { $p=Join-Path $r $_; '{0} -> {1} bytes' -f $_, (Get-Item -LiteralPath $p).Length }"

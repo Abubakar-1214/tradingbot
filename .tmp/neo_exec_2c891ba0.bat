@@ -1,0 +1,1 @@
+powershell -Command "Get-ChildItem -LiteralPath 'e:\Desktop\NeoMind\Bazz\autonoumuse_trader\research\backtest_results' -Recurse -File | Select-Object FullName, Length | Format-Table -AutoSize"

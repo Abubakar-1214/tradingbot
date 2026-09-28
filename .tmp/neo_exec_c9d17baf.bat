@@ -1,0 +1,1 @@
+powershell -Command "$f='e:\Desktop\NeoMind\Bazz\autonoumuse_trader\scripts\verify_features.py'; $c=Get-Content -LiteralPath $f; $c | Select-String -Pattern 'allclose|assert|roundtrip|transform|fit' -Context 1,2 | Select-Object -First 60"

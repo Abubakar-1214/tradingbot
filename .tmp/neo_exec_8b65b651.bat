@@ -1,0 +1,1 @@
+powershell -Command "Select-String -LiteralPath 'e:\Desktop\NeoMind\Bazz\autonoumuse_trader\models\dreamer_components.py' -Pattern 'def observe|def imagine|def initial_state|class RSSM' | Select-Object -First 10 LineNumber,Line"
