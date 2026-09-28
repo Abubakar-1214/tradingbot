@@ -128,6 +128,7 @@ class EnsembleAgent:
         self.num_models = int(num_models)
         if self.num_models < 1:
             raise ValueError("num_models must be positive")
+        self.agent_kwargs = agent_kwargs.copy()
         self.models = []
         for index in range(self.num_models):
             kwargs = agent_kwargs.copy()
@@ -136,6 +137,7 @@ class EnsembleAgent:
             torch.manual_seed(42 + index)
             np.random.seed(42 + index)
             self.models.append(agent_class(**kwargs))
+        self._members = None
 
     @staticmethod
     def _action(result):
@@ -146,23 +148,77 @@ class EnsembleAgent:
             return int(values.reshape(-1)[0])
         return int(np.argmax(values))
 
+    @staticmethod
+    def _member_action_dim(model, result, configured_action_dim=None):
+        action_dim = getattr(model, "action_dim", configured_action_dim)
+        if action_dim is not None:
+            return int(action_dim)
+        value = result[0] if isinstance(result, tuple) else result
+        if isinstance(value, PolicyOutput):
+            return len(value.probs)
+        values = np.asarray(value)
+        if values.ndim == 0 or values.size == 1:
+            return max(int(values.reshape(-1)[0]) + 1, 2)
+        return int(values.size)
+
+    def _build_members(self, obs, results):
+        obs_dim = int(np.asarray(obs).size)
+        configured_action_dim = self.agent_kwargs.get("action_dim")
+        self._members = [
+            _LegacyMemberPolicy(
+                model,
+                self._member_action_dim(model, result, configured_action_dim),
+                int(getattr(model, "obs_dim", obs_dim)),
+                pending_result=result,
+            )
+            for model, result in zip(self.models, results)
+        ]
+
     def act(self, obs, use_consensus=True, consensus_threshold=3):
-        actions = [self._action(model.act(obs)) for model in self.models]
+        results = [model.act(obs) for model in self.models]
+        if self._members is None:
+            self._build_members(obs, results)
+        else:
+            for member, result in zip(self._members, results):
+                member.pending_result = result
+        threshold = float(consensus_threshold)
+        min_agreement = (
+            min(max(threshold / self.num_models, 0.0), 1.0)
+            if use_consensus
+            else 0.0
+        )
+        policy = EnsemblePolicy(
+            self._members,
+            min_agreement=min_agreement,
+            vote="hard",
+        )
+        output = policy.act(obs)
+        actions = output.info["member_actions"]
         counts = Counter(actions)
         majority_action, majority_count = counts.most_common(1)[0]
-        consensus = majority_count >= consensus_threshold
-        action = majority_action if not use_consensus or consensus else 0
-        probabilities = np.asarray(list(counts.values()), dtype=np.float64) / len(actions)
-        uncertainty = -float(np.sum(probabilities * np.log(probabilities + 1e-10)))
+        consensus = output.info["consensus"] and not (
+            use_consensus and threshold > self.num_models
+        )
+        action = output.action if not use_consensus or consensus else 0
         return action, {
             "actions": actions,
             "action_counts": dict(counts),
             "majority_action": majority_action,
             "majority_count": majority_count,
+            **output.info,
             "consensus": consensus if use_consensus else True,
-            "uncertainty": uncertainty,
             "q_values": None,
         }
+
+    def reset(self):
+        for model in self.models:
+            reset = getattr(model, "reset", None)
+            if reset is not None:
+                reset()
+
+    def observe_executed(self, action):
+        for member in self._members or ():
+            member.observe_executed(action)
 
     def get_uncertainty(self, actions):
         counts = Counter(actions)
@@ -180,3 +236,31 @@ class EnsembleAgent:
     def load(self, path_prefix):
         for index, model in enumerate(self.models):
             model.load(f"{path_prefix}_model{index}.pt")
+
+
+class _LegacyMemberPolicy:
+    def __init__(self, model, action_dim, obs_dim, pending_result=None):
+        self.model = model
+        self.action_dim = int(action_dim)
+        self.obs_dim = int(obs_dim)
+        self.pending_result = pending_result
+
+    def act(self, obs):
+        if self.pending_result is not None:
+            result = self.pending_result
+            self.pending_result = None
+            return result
+        return self.model.act(obs)
+
+    def reset(self):
+        reset = getattr(self.model, "reset", None)
+        if reset is not None:
+            reset()
+
+    def observe_executed(self, action):
+        observe = getattr(self.model, "observe_executed", None)
+        if observe is not None:
+            member_action = int(action)
+            if member_action >= self.action_dim:
+                member_action = 0
+            observe(member_action)

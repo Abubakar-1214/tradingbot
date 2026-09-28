@@ -334,6 +334,11 @@ def test_ensemble_agent_accepts_array_and_tuple_outputs():
         )[0]
         == 0
     )
+    consensus_action, consensus_info = EnsembleAgent(ArrayAgent, num_models=3).act(
+        np.zeros(1)
+    )
+    assert consensus_action == 1
+    assert consensus_info["consensus"] is True
 
 
 def test_mcts_search_backup_and_three_action_initialization():
