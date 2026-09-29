@@ -125,7 +125,7 @@ def train(args) -> Path:
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Meta-train a Dreamer world model on causal regimes")
     parser.add_argument("--manifest", required=True)
-    parser.add_argument("--data", default="data/xauusd_1h.csv")
+    parser.add_argument("--data", default="data/xauusd_h1.csv")
     parser.add_argument("--macro")
     parser.add_argument("--train-end")
     parser.add_argument("--test-end")

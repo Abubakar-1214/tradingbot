@@ -127,7 +127,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description="Adapt a Dreamer artifact on recent training history")
     parser.add_argument("--manifest", required=True)
     parser.add_argument("--bars", type=int, required=True)
-    parser.add_argument("--data", default="data/xauusd_1h.csv")
+    parser.add_argument("--data", default="data/xauusd_h1.csv")
     parser.add_argument("--macro")
     parser.add_argument("--steps", type=int, default=3)
     parser.add_argument("--batch-size", type=int, default=16)

@@ -147,7 +147,7 @@ def main(argv=None):
     parser.add_argument("--min-agreement", type=float, default=0.6)
     parser.add_argument("--vote", choices=["soft", "hard"], default="soft")
     parser.add_argument("--weights", type=float, nargs="*")
-    parser.add_argument("--data", default="data/xauusd_1h.csv")
+    parser.add_argument("--data", default="data/xauusd_h1.csv")
     parser.add_argument("--macro")
     parser.add_argument("--train-end", default="2022-01-01")
     parser.add_argument("--eval-start")
