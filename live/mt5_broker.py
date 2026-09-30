@@ -30,6 +30,7 @@ from live.broker import (
     TRADE_ACTION_DEAL,
     TRADE_RETCODE_DONE,
     TRADE_RETCODE_MARKET_CLOSED,
+    TRADE_RETCODE_REQUOTE,
     AccountInfo,
     BaseBroker,
     BrokerError,
