@@ -277,8 +277,10 @@ def load_config(env_file: Optional[str] = None, _env: Optional[Dict[str, str]] =
         )
 
     symbol_raw = env.get("SYMBOL", "XAUUSD").strip().upper()
-    if symbol_raw not in ("XAUUSD",):
-        raise ValueError(f"Unsupported SYMBOL {symbol_raw!r} (only XAUUSD has data)")
+    if symbol_raw not in ("XAUUSD", "XAUUSDM"):
+        raise ValueError(f"Unsupported SYMBOL {symbol_raw!r} (only XAUUSD and XAUUSDm are supported)")
+    # Keep the exact casing required by the broker (e.g. XAUUSDm for Exness, or XAUUSD)
+    symbol_raw = "XAUUSDm" if symbol_raw == "XAUUSDM" else "XAUUSD"
 
     tf_raw = env.get("TIMEFRAME", "H1").strip().upper()
     if tf_raw not in Timeframe.__members__:

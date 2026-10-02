@@ -136,8 +136,17 @@ class Mt5Broker(BaseBroker):
         tick = mt5.symbol_info_tick(symbol)
         if tick is None:
             raise BrokerError(f"symbol_info_tick({symbol}) failed: {mt5.last_error()}")
-        return {"bid": float(tick.bid), "ask": float(tick.ask),
-                "last": float(tick.last), "spread": float(tick.spread or 0.0)}
+        spread = float(
+            getattr(tick, "spread", None)
+            if getattr(tick, "spread", None) is not None
+            else (tick.ask - tick.bid)
+        )
+        return {
+            "bid": float(tick.bid),
+            "ask": float(tick.ask),
+            "last": float(tick.last),
+            "spread": spread,
+        }
 
     def get_positions(self, symbol: Optional[str] = None,
                       magic: Optional[int] = None) -> List[PositionInfo]:
