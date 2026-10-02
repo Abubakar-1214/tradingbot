@@ -1,0 +1,57 @@
+Audit v2 — pytest results (re-run in this audit session)
+================================================================
+Command: .venv\Scripts\python.exe -m pytest tests/test_production_model_pipeline.py tests/test_phase_two_models.py tests/test_live_integration.py tests/test_live_decision.py tests/test_config.py tests/test_executor.py tests/test_export_mt5_history.py -v --tb=line
+Environment: venv python 3.13.12, torch 2.14.0+cpu, stable_baselines3 2.9.0, numpy 2.4.6, pandas 3.0.5, pytest 9.1.1, platform win32
+Result (first run):  78 passed in 23.07s — 0 failed, 0 errors, 0 skipped
+Result (re-run):     78 passed in 8.02s  — 0 failed, 0 errors, 0 skipped
+Exit code: 0 on both runs.
+
+Per-file counts (authoritative, from the -v run):
+
+  tests/test_production_model_pipeline.py         7 passed   (7/7)
+  tests/test_phase_two_models.py                 15 passed  (15/15)
+  tests/test_live_integration.py                  8 passed   (8/8)
+  tests/test_live_decision.py                    13 passed  (13/13)
+  tests/test_config.py                           18 passed  (18/18)
+  tests/test_executor.py                         16 passed  (16/16)
+  tests/test_export_mt5_history.py                1 passed   (1/1)
+  ---------------------------------------------------------------
+  TOTAL                                         78 passed  (78/78)
+
+What the suites prove:
+- test_production_model_pipeline: observation width (obs_dim = window*n_features+5),
+  train-only scaler fit + contract hash invariance, manifest round-trip +
+  hash/obs_dim/missing-file validation raising ModelArtifactError, world-model loss
+  numerically matching the extracted legacy phase, DreamerPolicy latent divergence
+  by executed action + reset reproducibility, FlatPolicy evaluation (0 trades) +
+  promotion gate logic, AND real PPO + Dreamer training end-to-end producing
+  complete artifact sets (model.zip / model.pt + feature_contract.json +
+  manifest.json + evaluation.json) with load_policy round-trip.
+- test_phase_two_models: transformer tokenization/GAE + train_step (params change,
+  attention weights real), ensemble consensus/voting/padding/lifecycle + array/
+  tuple act-output handling (prior bug 5), MCTS 3-action search + prev_action
+  zero-init (prior bug 4), MAML regime labels causal + segments non-empty + meta
+  train updates copy only (prior bug 1), market perturbations real, adversarial
+  SelfPlayTrainer ACTUALLY trains the Dreamer trader (prior bug 3), registry loads
+  transformer/ensemble/dreamer_mcts + rejects hash mismatch, transformer trainer
+  writes complete artifact.
+- test_live_integration: ModelSignalSource uses saved contract+window; hash and
+  action-space mismatches rejected; full LiveTrader loop routes orders through
+  executor + feeds observe_executed; promotion gate lists failures BEFORE MT5 init;
+  demo gate warns; exporter CSV shape accepted; MT5 server-time→UTC conversion;
+  account PnL math.
+- test_live_decision: DecisionEngine confidence/consensus/hold semantics; UTC
+  session windows (6 parametrized); cooldown; Kelly sizing bounds; TradeManager
+  breakeven/partial/trailing/time-stop.
+- test_config: 18 config parsing + validation + live-gate tests.
+- test_executor: 16 executor tests (all order paths check_trade, breakers, sizing,
+  reconciliation, determinism, state persistence, legacy state load).
+- test_export_mt5_history: server-offset export config.
+
+Notes:
+- The new suites TRAIN tiny smoke models (2-16 steps) on synthetic data inside tmp
+  dirs — they do NOT require pre-existing checkpoints, so no suite was blocked by
+  missing artifacts. Zero skips.
+- The docs' "139 passed" / "87 passed" claims refer to the wider full suite
+  (incl. env/*, risk, broker, position_sizing, backtest suites) which was not
+  independently re-run in this audit window; the 7 targeted suites are green here.

@@ -3,7 +3,8 @@ __pycache__/
 *.py[cod]
 *$py.class
 *.so
-.temp
+.tmp
+.kiro
 .qoder
 .kilocode
 .Python
@@ -43,6 +44,8 @@ artifacts/_smoke_state/
 # Logs
 *.log
 training.log
+
+.temp
 
 # IDE
 .vscode/

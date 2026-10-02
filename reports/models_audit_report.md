@@ -1,5 +1,11 @@
 # Models Audit Report — Autonomous XAUUSD Trading Bot
 
+## Status update
+
+The current model catalog and implemented interfaces are documented in
+[`docs/MODELS.md`](docs/MODELS.md). The historical audit below is retained as
+written.
+
 **Project:** `e:\Desktop\NeoMind\Bazz\autonoumuse_trader`
 **Question answered:** *Are the models added to this project FULLY implemented?*
 **Method:** Code reading (every model, training script, environment, live path, eval path, and doc) **combined with online research** of the official papers/repos for each model family, so that "what the model is supposed to be" is verified against the canonical source — not just against the local code.
