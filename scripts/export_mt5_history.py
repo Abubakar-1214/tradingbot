@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import argparse
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pandas as pd
@@ -25,6 +25,7 @@ def export_history(
     start: datetime,
     end: datetime,
     output: Path,
+    timeframe: str = "H1",
     utc_offset_hours: float | None = None,
 ) -> Path:
     cfg = load_config()
@@ -38,6 +39,11 @@ def export_history(
     except ImportError as exc:
         raise RuntimeError("MetaTrader5 export requires a Windows MT5 installation") from exc
 
+    tf_str = timeframe.upper()
+    tf_const = getattr(mt5, f"TIMEFRAME_{tf_str}", None)
+    if tf_const is None:
+        raise ValueError(f"Unsupported timeframe: {timeframe}")
+
     initialize_args = {}
     if cfg.broker.mt5_path:
         initialize_args["path"] = str(cfg.broker.mt5_path)
@@ -50,17 +56,27 @@ def export_history(
     if not mt5.initialize(**initialize_args):
         raise RuntimeError(f"MetaTrader5 initialize failed: {mt5.last_error()}")
 
+    is_fine_tf = tf_str in ("M1", "M5", "M15")
+
     try:
         chunks = []
         cursor = start
         while cursor < end:
-            year_end = datetime(
-                cursor.year, 12, 31, 23, 59, 59, tzinfo=timezone.utc
-            )
-            chunk_end = min(year_end, end)
+            if is_fine_tf:
+                if cursor.month == 12:
+                    month_end = datetime(cursor.year + 1, 1, 1, tzinfo=timezone.utc) - timedelta(seconds=1)
+                else:
+                    month_end = datetime(cursor.year, cursor.month + 1, 1, tzinfo=timezone.utc) - timedelta(seconds=1)
+                chunk_end = min(month_end, end)
+            else:
+                year_end = datetime(
+                    cursor.year, 12, 31, 23, 59, 59, tzinfo=timezone.utc
+                )
+                chunk_end = min(year_end, end)
+
             rates = mt5.copy_rates_range(
                 cfg.broker.symbol,
-                mt5.TIMEFRAME_H1,
+                tf_const,
                 cursor,
                 chunk_end,
             )
@@ -72,9 +88,16 @@ def export_history(
             if len(rates):
                 chunk = pd.DataFrame(rates)
                 chunks.append(chunk)
-            cursor = datetime(
-                cursor.year + 1, 1, 1, tzinfo=timezone.utc
-            )
+
+            if is_fine_tf:
+                if cursor.month == 12:
+                    cursor = datetime(cursor.year + 1, 1, 1, tzinfo=timezone.utc)
+                else:
+                    cursor = datetime(cursor.year, cursor.month + 1, 1, tzinfo=timezone.utc)
+            else:
+                cursor = datetime(
+                    cursor.year + 1, 1, 1, tzinfo=timezone.utc
+                )
     finally:
         mt5.shutdown()
 
@@ -98,9 +121,14 @@ def export_history(
 
 
 def main(argv=None) -> int:
-    parser = argparse.ArgumentParser(description="Export MT5 H1 history to CSV")
+    parser = argparse.ArgumentParser(description="Export MT5 history to CSV")
     parser.add_argument("--from", dest="start", required=True, help="UTC start date/time")
     parser.add_argument("--to", dest="end", required=True, help="UTC end date/time")
+    parser.add_argument(
+        "--timeframe",
+        default="H1",
+        help="timeframe to export (e.g. M1, M5, M15, H1, H4, D1; default: H1)",
+    )
     parser.add_argument(
         "--utc-offset-hours",
         type=float,
@@ -109,17 +137,22 @@ def main(argv=None) -> int:
     parser.add_argument(
         "--output",
         type=Path,
-        default=Path("data/xauusd_h1.csv"),
-        help="output CSV path (default: data/xauusd_h1.csv)",
+        help="output CSV path (default: data/xauusd_<timeframe>.csv)",
     )
     args = parser.parse_args(argv)
     start, end = _utc_datetime(args.start), _utc_datetime(args.end)
     if end <= start:
         parser.error("--to must be later than --from")
+    
+    tf = args.timeframe.upper()
+    output_path = args.output
+    if output_path is None:
+        output_path = Path(f"data/xauusd_{tf.lower()}.csv")
+
     path = export_history(
-        start, end, args.output, utc_offset_hours=args.utc_offset_hours
+        start, end, output_path, timeframe=tf, utc_offset_hours=args.utc_offset_hours
     )
-    print(f"Exported MT5 H1 bars to {path}")
+    print(f"Exported MT5 {tf} bars to {path}")
     return 0
 
 
