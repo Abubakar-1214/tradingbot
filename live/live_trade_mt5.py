@@ -70,6 +70,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from core.config import (
     AppConfig,
     TradingMode,
+    enforce_sltp_compatibility,
     load_config,
 )
 from core.model_artifacts import ModelArtifactError, load_manifest
@@ -393,7 +394,13 @@ class LiveTrader:
         )
         if decision.action == 2 and not self.cfg.broker.allow_short:
             decision = Decision(
-                0, decision.confidence, 0.0, "SHORT_DISABLED", decision.info
+                0,
+                decision.confidence,
+                0.0,
+                "SHORT_DISABLED",
+                decision.info,
+                decision.sl_frac,
+                decision.tp_frac,
             )
 
         if decision.action == position_side:
@@ -428,6 +435,8 @@ class LiveTrader:
                         market_data=md,
                         bar_time=bar_time,
                         size_multiplier=decision.size_multiplier,
+                        sl_frac=decision.sl_frac,
+                        tp_frac=decision.tp_frac,
                     )
                     events.append({
                         "event": "ENTRY",
@@ -784,6 +793,10 @@ def model_promotion_failures(cfg: AppConfig) -> list[str]:
 
 
 def enforce_model_promotion_gate(cfg: AppConfig) -> None:
+    # SL/TP dual-mode guard first: a model trained with SL/TP actions MUST run
+    # in SLTP_MODE=model (and vice versa).  Raises ValueError on mismatch —
+    # model-decided SL/TP output is NEVER silently discarded.
+    enforce_sltp_compatibility(cfg)
     if cfg.model.signal_source != "model":
         return
     failures = model_promotion_failures(cfg)

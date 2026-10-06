@@ -16,6 +16,8 @@ class Decision:
     size_multiplier: float = 1.0
     reason: str = "SIGNAL"
     info: dict = field(default_factory=dict)
+    sl_frac: float | None = None
+    tp_frac: float | None = None
 
 
 class DecisionEngine:
@@ -49,16 +51,20 @@ class DecisionEngine:
             confidence = float(raw.confidence)
             info = dict(raw.info)
             reason = raw.reason
+            sl_frac = raw.sl_frac
+            tp_frac = raw.tp_frac
         else:
             action = int(raw.action)
             confidence = float(raw.confidence)
             info = dict(raw.info)
             reason = "MODEL_SIGNAL"
+            sl_frac = None
+            tp_frac = None
 
         if reason == "NO_SIGNAL" or info.get("hold"):
-            return Decision(position_side, confidence, 0.0, reason, info)
+            return Decision(position_side, confidence, 0.0, reason, info, sl_frac, tp_frac)
         if confidence < self.cfg.min_confidence:
-            return Decision(position_side, confidence, 0.0, "LOW_CONFIDENCE", info)
+            return Decision(position_side, confidence, 0.0, "LOW_CONFIDENCE", info, sl_frac, tp_frac)
         if (
             ("consensus" in info and not bool(info["consensus"]))
             or (
@@ -66,18 +72,18 @@ class DecisionEngine:
                 and float(info["agreement"]) < self.cfg.min_ensemble_agreement
             )
         ):
-            return Decision(position_side, confidence, 0.0, "NO_CONSENSUS", info)
+            return Decision(position_side, confidence, 0.0, "NO_CONSENSUS", info, sl_frac, tp_frac)
 
         if action == position_side:
-            return Decision(action, confidence, 1.0, "HOLD", info)
+            return Decision(action, confidence, 1.0, "HOLD", info, sl_frac, tp_frac)
         is_entry = action != 0
         if not is_entry:
-            return Decision(action, confidence, 1.0, reason, info)
+            return Decision(action, confidence, 1.0, reason, info, sl_frac, tp_frac)
 
         entry_block = self._entry_block(now_utc, bars_since_last_loss)
         if entry_block:
             target = 0 if position_side and action != position_side else position_side
-            return Decision(target, confidence, 0.0, entry_block, info)
+            return Decision(target, confidence, 0.0, entry_block, info, sl_frac, tp_frac)
 
         confidence_scale = float(
             np.clip(
@@ -90,13 +96,15 @@ class DecisionEngine:
         kelly_scale = self._kelly_scale(recent_trades)
         if kelly_scale <= 0.0:
             target = 0 if position_side and action != position_side else position_side
-            return Decision(target, confidence, 0.0, "NO_EDGE", info)
+            return Decision(target, confidence, 0.0, "NO_EDGE", info, sl_frac, tp_frac)
         return Decision(
             action,
             confidence,
             min(1.0, confidence_scale * kelly_scale),
             reason,
             info,
+            sl_frac,
+            tp_frac,
         )
 
     def _entry_block(

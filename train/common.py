@@ -40,6 +40,7 @@ def write_model_artifact(
     timeframe="H1",
     members=None,
     extra=None,
+    sl_tp_mode="rules",
 ):
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
@@ -67,5 +68,6 @@ def write_model_artifact(
         hyperparams=hyperparams,
         members=list(members or []),
         extra=dict(extra or {}),
+        sl_tp_mode=sl_tp_mode,
     )
     return save_manifest(manifest, directory)

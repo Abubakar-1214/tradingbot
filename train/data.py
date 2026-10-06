@@ -1,5 +1,13 @@
 from dataclasses import dataclass
 from pathlib import Path
+import sys
+
+ROOT = Path(__file__).resolve().parent.parent
+train_dir = str(Path(__file__).resolve().parent)
+while train_dir in sys.path:
+    sys.path.remove(train_dir)
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 import numpy as np
 import pandas as pd

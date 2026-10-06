@@ -55,6 +55,7 @@ def export_history(
         initialize_args["server"] = cfg.broker.mt5_server
     if not mt5.initialize(**initialize_args):
         raise RuntimeError(f"MetaTrader5 initialize failed: {mt5.last_error()}")
+    mt5.symbol_select(cfg.broker.symbol, True)
 
     is_fine_tf = tf_str in ("M1", "M5", "M15")
 

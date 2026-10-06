@@ -5,6 +5,7 @@ __pycache__/
 *.so
 .tmp
 .kiro
+.dropstone\
 .qoder
 .kilocode
 .Python
@@ -46,6 +47,11 @@ artifacts/_smoke_state/
 training.log
 
 .temp
+
+# Node dashboard
+node_modules/
+frontend/node_modules/
+frontend/dist/
 
 # IDE
 .vscode/

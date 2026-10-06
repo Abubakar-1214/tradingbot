@@ -25,6 +25,18 @@ except ImportError:  # pragma: no cover - dependency is pinned in requirements
     load_dotenv = None  # type: ignore
 
 # --------------------------------------------------------------------------- #
+# SL/TP dual-mode constants come from the artifact layer (no circular import:
+# core/model_artifacts.py imports only stdlib).
+# --------------------------------------------------------------------------- #
+from core.model_artifacts import (  # noqa: E402
+    SLTP_MODE_MODEL,
+    SLTP_MODE_RULES,
+    ModelArtifactError,
+    ModelManifest,
+    load_manifest,
+)
+
+# --------------------------------------------------------------------------- #
 # Repo layout
 # --------------------------------------------------------------------------- #
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -177,6 +189,15 @@ class TradingBehaviorConfig:
     kelly_min_trades: int = 30
     require_promoted_model: bool = True
     risk_per_trade: float = 0.02
+    # SL/TP dual-mode source: "rules" (ATR rule path, current behavior) or
+    # "model" (composite 75-action space decides per-trade SL/TP fractions).
+    sl_tp_mode: str = SLTP_MODE_RULES
+    # Model-decided SL/TP fraction bounds (fractions of entry price).  The
+    # defaults match the training bucket extremes {0.005, ..., 0.05}.
+    sl_tp_min_frac: float = 0.005
+    sl_tp_max_frac: float = 0.05
+    tp_min_frac: float = 0.005
+    tp_max_frac: float = 0.05
 
 
 @dataclass(frozen=True)
@@ -296,6 +317,27 @@ def load_config(env_file: Optional[str] = None, _env: Optional[Dict[str, str]] =
         raise ValueError(
             f"SIGNAL_SOURCE must be 'rule' or 'model' ('ppo' is an alias), got {signal_source!r}"
         )
+
+    # SL/TP dual-mode: which layer decides stop-loss/take-profit.
+    sl_tp_mode = env.get("SLTP_MODE", SLTP_MODE_RULES).strip().lower()
+    if sl_tp_mode not in (SLTP_MODE_RULES, SLTP_MODE_MODEL):
+        raise ValueError(
+            f"SLTP_MODE must be 'rules' or 'model', got {sl_tp_mode!r}"
+        )
+    # Model-decided fraction bounds (fractions of entry price).
+    sl_tp_min_frac = _as_float("SL_TP_MIN_FRAC", env.get("SL_TP_MIN_FRAC"), 0.005)
+    sl_tp_max_frac = _as_float("SL_TP_MAX_FRAC", env.get("SL_TP_MAX_FRAC"), 0.05)
+    tp_min_frac = _as_float("TP_MIN_FRAC", env.get("TP_MIN_FRAC"), 0.005)
+    tp_max_frac = _as_float("TP_MAX_FRAC", env.get("TP_MAX_FRAC"), 0.05)
+    for name, lo, hi in [
+        ("SL_TP_MIN_FRAC", sl_tp_min_frac, sl_tp_max_frac),
+        ("TP_MIN_FRAC", tp_min_frac, tp_max_frac),
+    ]:
+        if not 0.0 < lo <= hi < 1.0:
+            raise ValueError(
+                f"{name}={lo} must satisfy 0 < min <= max < 1 "
+                f"(got max {hi})"
+            )
 
     min_confidence = _as_float("MIN_CONFIDENCE", env.get("MIN_CONFIDENCE"), 0.55)
     min_ensemble_agreement = _as_float(
@@ -420,6 +462,11 @@ def load_config(env_file: Optional[str] = None, _env: Optional[Dict[str, str]] =
             "REQUIRE_PROMOTED_MODEL", env.get("REQUIRE_PROMOTED_MODEL"), True
         ),
         risk_per_trade=risk.risk_per_trade,
+        sl_tp_mode=sl_tp_mode,
+        sl_tp_min_frac=sl_tp_min_frac,
+        sl_tp_max_frac=sl_tp_max_frac,
+        tp_min_frac=tp_min_frac,
+        tp_max_frac=tp_max_frac,
     )
     if behavior.breakeven_at_r < 0 or behavior.trail_start_r < 0:
         raise ValueError("BREAKEVEN_AT_R and TRAIL_START_R must be non-negative")
@@ -529,6 +576,70 @@ def ensure_trading_allowed(cfg: AppConfig, gates: Optional[GateResult] = None) -
 
 
 # --------------------------------------------------------------------------- #
+# SL/TP dual-mode compatibility guard
+# --------------------------------------------------------------------------- #
+def sltp_mode_failures(
+    cfg: AppConfig, manifest: Optional[ModelManifest] = None
+) -> List[str]:
+    """Return SL/TP-mode mismatch failures between config and model artifact.
+
+    A model trained with SL/TP actions (manifest ``sl_tp_mode="model"``) MUST
+    only run with ``SLTP_MODE=model`` — otherwise its trained SL/TP output
+    would be silently discarded (the user's core safety concern).  Conversely,
+    a rules artifact (``sl_tp_mode="rules"``) cannot supply SL/TP fractions
+    when ``SLTP_MODE=model`` demands them.  Both mismatch directions are
+    reported here; match combinations produce an empty list.
+    """
+    failures: List[str] = []
+    cfg_mode = cfg.behavior.sl_tp_mode
+    if cfg_mode == SLTP_MODE_MODEL and cfg.model.signal_source != "model":
+        failures.append(
+            "SLTP_MODE=model requires SIGNAL_SOURCE=model (model-decided SL/TP "
+            f"only works when the model provides signals); got "
+            f"SIGNAL_SOURCE={cfg.model.signal_source!r}"
+        )
+    if manifest is None:
+        return failures
+    art_mode = manifest.sl_tp_mode
+    if cfg_mode == SLTP_MODE_MODEL and art_mode != SLTP_MODE_MODEL:
+        failures.append(
+            f"SLTP_MODE=model but the model artifact was trained with "
+            f"sl_tp_mode={art_mode!r} (no SL/TP actions) and cannot supply "
+            f"SL/TP fractions. Train with --sl-tp-model or set SLTP_MODE=rules."
+        )
+    if cfg_mode == SLTP_MODE_RULES and art_mode == SLTP_MODE_MODEL:
+        failures.append(
+            "SLTP_MODE=rules but the model artifact was trained WITH SL/TP "
+            "actions (sl_tp_mode='model'); running it in rules mode would "
+            "SILENTLY DISCARD its trained SL/TP output. Set SLTP_MODE=model "
+            "or select a rules-trained artifact."
+        )
+    return failures
+
+
+def enforce_sltp_compatibility(cfg: AppConfig) -> None:
+    """Raise a clear ``ValueError`` on any SL/TP-mode mismatch at startup.
+
+    When the model is the active signal source the selected artifact's
+    ``sl_tp_mode`` is loaded and compared against ``SLTP_MODE``.  Both
+    mismatch directions (model artifact in rules mode; rules artifact in model
+    mode) raise ``ValueError`` — never a silent discard.  Manifest-load
+    failures are owned by the model promotion gate, not by this guard.
+    """
+    manifest: Optional[ModelManifest] = None
+    if cfg.model.signal_source == "model":
+        try:
+            manifest = load_manifest(cfg.model.manifest_path)
+        except ModelArtifactError:
+            manifest = None  # unloadable manifest -> promotion gate's concern
+    failures = sltp_mode_failures(cfg, manifest)
+    if failures:
+        raise ValueError(
+            "SL/TP configuration mismatch refused to start: " + "; ".join(failures)
+        )
+
+
+# --------------------------------------------------------------------------- #
 # CLI
 # --------------------------------------------------------------------------- #
 if __name__ == "__main__":  # pragma: no cover - manual verification entry
@@ -539,6 +650,9 @@ if __name__ == "__main__":  # pragma: no cover - manual verification entry
     print(f"TRADING_MODE      : {cfg.trading_mode.value}")
     print(f"SYMBOL / TIMEFRAME: {cfg.symbol_cfg} / {cfg.timeframe}")
     print(f"ALLOW_SHORT       : {cfg.broker.allow_short}")
+    print(f"SL/TP mode        : {cfg.behavior.sl_tp_mode} "
+          f"(sl bounds {cfg.behavior.sl_tp_min_frac}-{cfg.behavior.sl_tp_max_frac}, "
+          f"tp bounds {cfg.behavior.tp_min_frac}-{cfg.behavior.tp_max_frac})")
     print(f"Risk             : daily_loss={cfg.risk.max_daily_loss:.2%} "
           f"dd={cfg.risk.max_drawdown:.2%} risk/trade={cfg.risk.risk_per_trade:.2%} "
           f"max_pos={cfg.risk.max_position:.2%} corr_guard={cfg.risk.correlation_guard_enabled}")
@@ -560,4 +674,5 @@ if __name__ == "__main__":  # pragma: no cover - manual verification entry
         reconciliation_passed=True,
     )
     ensure_trading_allowed(cfg, gates)
+    enforce_sltp_compatibility(cfg)
     print("\nTRADING_MODE gate: OK (trading permitted)")

@@ -1,4 +1,7 @@
 import argparse
+import json
+import math
+import os
 import random
 import sys
 from pathlib import Path
@@ -7,6 +10,9 @@ import numpy as np
 import torch
 
 ROOT = Path(__file__).resolve().parent.parent
+train_dir = str(Path(__file__).resolve().parent)
+while train_dir in sys.path:
+    sys.path.remove(train_dir)
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
@@ -46,12 +52,18 @@ def train(args) -> Path:
         test_end=_arg(args, "test_end", None),
     )
     allow_short = bool(_arg(args, "allow_short", True))
-    action_dim = 3 if allow_short else 2
+    sl_tp_model = bool(_arg(args, "sl_tp_model", False))
+    # Model-decides SL/TP: composite 75-action space (direction x SL bucket x
+    # TP bucket) so the policy also chooses the per-trade SL/TP fractions.
+    # Rules mode keeps the legacy 3/2-action space byte-for-byte.
+    action_dim = 75 if sl_tp_model else (3 if allow_short else 2)
     env_kwargs = {
         **DEFAULT_ENV_KWARGS,
         "window": data.window,
         "allow_short": allow_short,
     }
+    if sl_tp_model:
+        env_kwargs["sl_tp_action"] = True
     env = RealisticTradingEnv(
         data.X_train,
         data.r_train,
@@ -101,6 +113,12 @@ def train(args) -> Path:
     save_every = max(1, int(_arg(args, "save_every", 10_000)))
     obs = env.reset()
     h = z = None
+    metrics_path = os.environ.get("DASHBOARD_METRICS_PATH")
+    metrics_handle = None
+    if metrics_path:
+        metrics_file = Path(metrics_path)
+        metrics_file.parent.mkdir(parents=True, exist_ok=True)
+        metrics_handle = metrics_file.open("a", encoding="utf-8", buffering=1)
     for step in range(steps):
         action, (h, z) = agent.act(obs, h, z, deterministic=False)
         next_obs, reward, done, _ = env.step(action)
@@ -109,10 +127,17 @@ def train(args) -> Path:
         if done:
             h = z = None
         if step % train_every == 0:
-            agent.train_step(batch_size=batch_size)
+            metrics = agent.train_step(batch_size=batch_size)
+            if metrics_handle is not None:
+                sample = {"training_step": int(agent.training_step)}
+                sample.update({key: (float(value) if value is not None and math.isfinite(float(value)) else None) for key, value in metrics.items()})
+                metrics_handle.write(json.dumps(sample, allow_nan=False) + "\n")
+                metrics_handle.flush()
         if (step + 1) % save_every == 0:
             agent.save(out_dir / f"checkpoint_{agent.training_step}.pt")
 
+    if metrics_handle is not None:
+        metrics_handle.close()
     model_path = out_dir / "model.pt"
     agent.save(model_path)
     write_model_artifact(
@@ -141,6 +166,7 @@ def train(args) -> Path:
             "num_categories": int(_arg(args, "num_categories", 32)),
             "horizon": int(_arg(args, "horizon", 15)),
         },
+        sl_tp_mode="model" if sl_tp_model else "rules",
     )
     if len(data.X_test) <= data.window + 2:
         raise ValueError("test period must contain more than window+2 feature rows")
@@ -185,6 +211,14 @@ def main(argv=None):
     parser.add_argument("--horizon", type=int, default=15)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", choices=["auto", "cpu", "cuda", "mps"], default="auto")
+    parser.add_argument(
+        "--sl-tp-model",
+        dest="sl_tp_model",
+        action="store_true",
+        help="train the composite 75-action space (direction x SL bucket x TP "
+             "bucket) so the policy decides per-trade SL/TP; the artifact "
+             "manifest is written with sl_tp_mode='model'",
+    )
     actions = parser.add_mutually_exclusive_group()
     actions.add_argument("--allow-short", dest="allow_short", action="store_true")
     actions.add_argument("--long-only", dest="allow_short", action="store_false")

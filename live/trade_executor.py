@@ -52,7 +52,7 @@ import numpy as np
 import pandas as pd
 
 from backtest.strategies import atr as causal_atr
-from core.config import AppConfig
+from core.config import AppConfig, SLTP_MODE_MODEL
 from live.broker import (
     BaseBroker,
     BrokerError,
@@ -301,6 +301,28 @@ class TradeExecutor:
             return entry - atr * self.cfg.broker.sl_atr_mult, entry + atr * self.cfg.broker.tp_atr_mult
         return entry + atr * self.cfg.broker.sl_atr_mult, entry - atr * self.cfg.broker.tp_atr_mult
 
+    def entry_sl_tp_model(
+        self, side: str, entry: float, sl_frac: float, tp_frac: float
+    ) -> Tuple[float, float]:
+        """SL/TP prices from model-decided fractions, clamped to bounds.
+
+        Long:  SL = entry * (1 - sl_frac), TP = entry * (1 + tp_frac)
+        Short: SL = entry * (1 + sl_frac), TP = entry * (1 - tp_frac)
+        Each fraction is clamped to its configured bound range
+        (sl_tp_min_frac..sl_tp_max_frac / tp_min_frac..tp_max_frac) so a
+        model output can never create a stop/target outside the permitted
+        risk envelope.
+        """
+        sl_frac = float(
+            min(max(sl_frac, self.cfg.behavior.sl_tp_min_frac), self.cfg.behavior.sl_tp_max_frac)
+        )
+        tp_frac = float(
+            min(max(tp_frac, self.cfg.behavior.tp_min_frac), self.cfg.behavior.tp_max_frac)
+        )
+        if side == "buy":
+            return entry * (1.0 - sl_frac), entry * (1.0 + tp_frac)
+        return entry * (1.0 + sl_frac), entry * (1.0 - tp_frac)
+
     # ------------------------------------------------------------------ #
     # ORDER PATHS — every one consults the RiskSupervisor
     # ------------------------------------------------------------------ #
@@ -312,8 +334,18 @@ class TradeExecutor:
         market_data: Optional[Dict[str, float]] = None,
         bar_time: Optional[str] = None,
         size_multiplier: float = 1.0,
+        sl_frac: Optional[float] = None,
+        tp_frac: Optional[float] = None,
     ) -> Tuple[bool, str, Optional[OrderResult]]:
-        """Open a new position.  Risk-gated BEFORE the broker is touched."""
+        """Open a new position.  Risk-gated BEFORE the broker is touched.
+
+        ``sl_frac``/``tp_frac`` carry the model-decided SL/TP fractions
+        (fractions of entry price) when ``cfg.behavior.sl_tp_mode ==
+        "model"``.  They are clamped to the configured bounds and converted
+        to stop/target prices ``entry * (1 - sl_frac)`` / ``entry * (1 +
+        tp_frac)`` (long) or the mirrored levels (short).  In rules mode
+        (default) the ATR rule path is used unchanged.
+        """
         if self.halted:
             return False, f"EXECUTOR_HALTED: {self.halt_reason}", None
         if not 0.0 < size_multiplier <= 1.0:
@@ -345,7 +377,16 @@ class TradeExecutor:
         if not approved:
             return False, f"RISK_REJECTED: {reason}", None
 
-        sl, tp = self.entry_sl_tp("buy" if direction == 1 else "sell", entry, atr)
+        if (
+            self.cfg.behavior.sl_tp_mode == SLTP_MODE_MODEL
+            and sl_frac is not None
+            and tp_frac is not None
+        ):
+            sl, tp = self.entry_sl_tp_model(
+                "buy" if direction == 1 else "sell", entry, sl_frac, tp_frac
+            )
+        else:
+            sl, tp = self.entry_sl_tp("buy" if direction == 1 else "sell", entry, atr)
         req = OrderRequest(
             symbol=self.cfg.broker.symbol,
             side="buy" if direction == 1 else "sell",

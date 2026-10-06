@@ -4,7 +4,10 @@ Realistic XAUUSD trading environment for DreamerV3 training.
 Replaces the toy "flat/long, fixed 1bp cost" environment used by the Dreamer
 training scripts with a broker-like simulation:
 
-- Actions: flat / long / short (short can be disabled).
+- Actions: flat / long / short (short can be disabled).  With
+  ``sl_tp_action=True`` the action space becomes a composite 75-action space
+  (direction x SL bucket x TP bucket) so the policy also decides the per-trade
+  stop-loss / take-profit price fractions.
 - Execution: bid/ask spread, commission, random volatility-scaled slippage,
   spread widening in high-volatility bars and (optionally) around news events.
 - Financing: overnight swap charged once per calendar day rollover (triple on
@@ -42,7 +45,7 @@ DEFAULT_ENV_KWARGS = {
     "leverage": 1.0,
     "spread": 0.00025,        # 2.5 bp round-trip spread (~$0.50)
     "commission": 0.00003,    # 0.3 bp per side
-    "slippage": 0.00005,      # mean |slippage| per fill, vol-scaled, mostly adverse
+    "slippage": 0.00005,      # mean |slippage| per fill, vol-scaled
     "swap_long": -0.00004,    # daily financing, fraction of notional
     "swap_short": -0.00002,
     "stop_loss": 0.01,        # 1% adverse move on a trade -> forced close
@@ -52,7 +55,20 @@ DEFAULT_ENV_KWARGS = {
     "reward_scale": 100.0,    # 1% equity change -> reward 1.0
     "max_episode_steps": 4096,
     "random_start": True,
+    "sl_tp_action": False,    # True -> composite 75-action space (dir x SL x TP)
+    "turnover_penalty": 0.0,  # Turnover penalty per unit of position delta
+    "hold_bonus": 0.0,        # Holding bonus per bar for staying in position
+    "min_hold_bars": 0,       # Minimum bars to hold a trade before voluntary close
+    "early_exit_penalty": 0.0, # Penalty for closing a trade before min_hold_bars
+    "short_penalty": 0.0,     # Penalty per bar for holding a short position (anti-countertrend)
 }
+
+# SL/TP price-fraction buckets for the composite action space.  These match the
+# env's existing equity-fraction SL/TP semantics (checked against the bar's
+# move) and the live conversion entry * (1 +/- frac), so training and live
+# always agree on what an SL/TP bucket means.
+SL_BUCKETS = (0.005, 0.01, 0.02, 0.03, 0.05)
+TP_BUCKETS = (0.005, 0.01, 0.02, 0.03, 0.05)
 
 # Evaluation: one continuous pass over the period, same costs, no circuit breaker.
 EVAL_ENV_OVERRIDES = {
@@ -91,6 +107,12 @@ class RealisticTradingEnv:
         reward_scale=100.0,      # 1% equity change -> reward 1.0
         max_episode_steps=4096,
         random_start=True,
+        sl_tp_action=False,      # True -> composite 75-action space (dir x SL x TP)
+        turnover_penalty=0.0,
+        hold_bonus=0.0,
+        min_hold_bars=0,
+        early_exit_penalty=0.0,
+        short_penalty=0.0,
         seed=None,
     ):
         assert features.ndim == 2 and returns.ndim == 1
@@ -119,6 +141,12 @@ class RealisticTradingEnv:
         self.reward_scale = float(reward_scale)
         self.max_episode_steps = None if max_episode_steps is None else int(max_episode_steps)
         self.random_start = bool(random_start)
+        self.sl_tp_action = bool(sl_tp_action)
+        self.turnover_penalty = float(turnover_penalty)
+        self.hold_bonus = float(hold_bonus)
+        self.min_hold_bars = int(min_hold_bars)
+        self.early_exit_penalty = float(early_exit_penalty)
+        self.short_penalty = float(short_penalty)
         self.rng = np.random.default_rng(seed)
 
         if self.T <= self.window + 2:
@@ -135,7 +163,10 @@ class RealisticTradingEnv:
         self.day_id = self._day_ids(timestamps)
         self.weekday = self._weekdays(timestamps)
 
-        self.action_space = 3 if self.allow_short else 2
+        if self.sl_tp_action:
+            self.action_space = 75
+        else:
+            self.action_space = 3 if self.allow_short else 2
         self.observation_space = self.window * self.X.shape[1] + ACCOUNT_STATE_DIM
 
         logger.info("RealisticTradingEnv: T=%d features=%d window=%d actions=%d "
@@ -201,6 +232,8 @@ class RealisticTradingEnv:
         self.entry_equity = 1.0
         self.trade_pnl = 0.0
         self.bars_in_trade = 0
+        self.trade_sl = None
+        self.trade_tp = None
 
         self.n_trades = 0
         self.n_wins = 0
@@ -233,10 +266,32 @@ class RealisticTradingEnv:
 
     # ------------------------------------------------------------- execution
     def _decode_action(self, action_onehot):
+        """Decode a one-hot action into an internal direction (+ optional SL/TP).
+
+        Legacy mode (``sl_tp_action=False``): scalar action 0/1/2 -> flat/long/
+        short (2-action env: 0/2 flat, 1 long), identical to the original env.
+
+        Composite mode (``sl_tp_action=True``): 75 actions encoded as
+        ``idx = direction * 25 + sl_idx * 5 + tp_idx`` where direction is the
+        0/1/2 scalar above, and sl_idx / tp_idx index the SL_BUCKETS /
+        TP_BUCKETS tuples.  Returns ``(direction, sl_frac, tp_frac)``.
+        """
         idx = int(np.argmax(action_onehot))
+        if not self.sl_tp_action:
+            if self.allow_short:
+                return {0: 0, 1: 1, 2: -1}[idx]
+            return 1 if idx == 1 else 0
+        if not 0 <= idx < 75:
+            raise ValueError(f"composite action {idx} outside [0, 75)")
+        dir_idx = idx // 25
+        sl_idx = (idx // 5) % 5
+        tp_idx = idx % 5
         if self.allow_short:
-            return {0: 0, 1: 1, 2: -1}[idx]
-        return 1 if idx == 1 else 0
+            direction = {0: 0, 1: 1, 2: -1}[dir_idx]
+        else:
+            # Long-only: mirror the legacy 2-action mapping (only 1 is long).
+            direction = 1 if dir_idx == 1 else 0
+        return direction, SL_BUCKETS[sl_idx], TP_BUCKETS[tp_idx]
 
     def set_perturbation(self, spread_mult=1.0, slippage_mult=1.0, adverse_gap=0.0):
         values = np.asarray([spread_mult, slippage_mult, adverse_gap], dtype=np.float64)
@@ -301,7 +356,12 @@ class RealisticTradingEnv:
         spread_mult, slippage_mult, adverse_gap = self._pending_perturbation
         self._pending_perturbation = (1.0, 1.0, 0.0)
         prev_pos = self.pos
-        new_pos = self._decode_action(action_onehot)
+        prev_bars_in_trade = self.bars_in_trade
+        if self.sl_tp_action:
+            new_pos, sl_frac, tp_frac = self._decode_action(action_onehot)
+        else:
+            new_pos = self._decode_action(action_onehot)
+            sl_frac = tp_frac = None
         t = self.t
         ret = float(self.r[t])
         equity_before = self.equity
@@ -323,21 +383,26 @@ class RealisticTradingEnv:
                         new_pos * self.leverage, t, spread_mult, slippage_mult
                     )
                 )
-                self._open_trade()
+                self._open_trade(sl_frac, tp_frac)
 
         # 3. Hold through the bar; SL/TP are checked against the bar's move.
+        #    In sl_tp_action mode the per-trade SL/TP come from the composite
+        #    action's buckets (trade_sl/trade_tp); otherwise the fixed env
+        #    stop_loss/take_profit params are used (byte-identical legacy path).
         exposure = new_pos * self.leverage
         gross = exposure * ret
         forced_close = False
         if new_pos != 0:
             trade_move = self.trade_pnl + gross  # cumulative leveraged pnl of the trade
             stop_move = trade_move - abs(adverse_gap) * abs(exposure)
-            if self.stop_loss is not None and stop_move <= -self.stop_loss:
-                gross = -self.stop_loss - self.trade_pnl
+            sl_level = self.trade_sl if self.sl_tp_action else self.stop_loss
+            tp_level = self.trade_tp if self.sl_tp_action else self.take_profit
+            if sl_level is not None and stop_move <= -sl_level:
+                gross = -sl_level - self.trade_pnl
                 forced_close = True
                 self.sl_hits += 1
-            elif self.take_profit is not None and trade_move >= self.take_profit:
-                gross = self.take_profit - self.trade_pnl
+            elif tp_level is not None and trade_move >= tp_level:
+                gross = tp_level - self.trade_pnl
                 forced_close = True
                 self.tp_hits += 1
 
@@ -370,6 +435,22 @@ class RealisticTradingEnv:
         self.max_dd = max(self.max_dd, self.drawdown)
         log_ret = np.log(self.equity / equity_before)
         reward = log_ret - self.drawdown_penalty * max(self.drawdown - prev_dd, 0.0)
+
+        # Churn / turnover penalty, early exit penalty, and holding stability bonus
+        delta_pos = abs(new_pos - prev_pos)
+        turnover_loss = 0.0
+        if delta_pos > 0:
+            turnover_loss += self.turnover_penalty * delta_pos
+            if prev_pos != 0 and prev_bars_in_trade < self.min_hold_bars and not forced_close:
+                turnover_loss += self.early_exit_penalty
+            reward -= turnover_loss
+        elif new_pos != 0:
+            reward += self.hold_bonus
+
+        # Counter-trend short penalty: discourages short exposure during bull regimes
+        if new_pos < 0:
+            reward -= self.short_penalty
+
         reward = float(reward * self.reward_scale)
         self.rewards.append(reward)
 
@@ -385,13 +466,16 @@ class RealisticTradingEnv:
             "drawdown": self.drawdown,
             "forced_close": forced_close,
             "blown_up": blown_up,
+            "turnover_penalty": float(turnover_loss),
         }
         return obs, reward, done, info
 
-    def _open_trade(self):
+    def _open_trade(self, sl_frac=None, tp_frac=None):
         self.entry_equity = self.equity
         self.trade_pnl = 0.0
         self.bars_in_trade = 0
+        self.trade_sl = None if sl_frac is None else float(sl_frac)
+        self.trade_tp = None if tp_frac is None else float(tp_frac)
 
     def _close_trade(self):
         self.n_trades += 1

@@ -51,6 +51,12 @@ def evaluate_policy(
     window = int(kwargs["window"])
     if env_kwargs is None or "allow_short" not in env_kwargs:
         kwargs["allow_short"] = policy.action_dim == 3
+    if policy.action_dim > 3:
+        # Composite SL/TP action space (direction x SL bucket x TP bucket =
+        # 75): the policy decides per-trade SL/TP, so the eval env must decode
+        # the same composite actions it was trained with.  action_dim == 3
+        # (or 2) keeps the legacy rules-mode inference above.
+        kwargs["sl_tp_action"] = True
     env = RealisticTradingEnv(X_test, r_test, timestamps=ts_test, **kwargs)
     policy.reset()
     obs = env._get_obs()

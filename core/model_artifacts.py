@@ -5,6 +5,18 @@ from pathlib import Path
 
 MANIFEST_VERSION = 1
 
+# How a model artifact sources its SL/TP:
+#   "rules" -> the live ATR rule path computes SL/TP (current behavior);
+#   "model" -> the policy's composite 75-action space decides per-trade SL/TP
+#              fractions (action_dim must be 75).
+SLTP_MODE_RULES = "rules"
+SLTP_MODE_MODEL = "model"
+SLTP_MODES = (SLTP_MODE_RULES, SLTP_MODE_MODEL)
+
+# Composite action space: direction (3) x SL bucket (5) x TP bucket (5) = 75.
+# These must match env/dreamer_trading_env.py SL_BUCKETS/TP_BUCKETS.
+SLTP_ACTION_DIM = 75
+
 
 class ModelArtifactError(RuntimeError):
     pass
@@ -31,6 +43,9 @@ class ModelManifest:
     hyperparams: dict
     members: list[str] = field(default_factory=list)
     extra: dict = field(default_factory=dict)
+    # sl_tp_mode is defaulted AFTER every non-default field so manifests that
+    # predate this field (no sl_tp_mode key) still load via ModelManifest(**payload).
+    sl_tp_mode: str = SLTP_MODE_RULES
 
 
 def artifact_dir(root: Path, model_type: str, run_name: str | None) -> Path:
@@ -73,6 +88,20 @@ def _read_and_validate(path: Path) -> ModelManifest:
         raise ModelArtifactError(
             f"obs_dim mismatch: {manifest.obs_dim} != "
             f"{manifest.window}*{manifest.n_features}+5"
+        )
+    # SL/TP-mode consistency: a model that DECIDES its own SL/TP must use the
+    # composite 75-action space; anything else means the artifact could be run
+    # in a mode where its SL/TP output would silently be discarded.
+    if manifest.sl_tp_mode not in SLTP_MODES:
+        raise ModelArtifactError(
+            f"invalid sl_tp_mode {manifest.sl_tp_mode!r}; expected one of {SLTP_MODES}"
+        )
+    if manifest.sl_tp_mode == SLTP_MODE_MODEL and manifest.action_dim != SLTP_ACTION_DIM:
+        raise ModelArtifactError(
+            f"sl_tp_mode='model' requires action_dim={SLTP_ACTION_DIM}, "
+            f"got {manifest.action_dim}; a model-trained-on-SL/TP must use the "
+            f"composite {SLTP_ACTION_DIM}-action space so its SL/TP output is "
+            f"never silently discarded"
         )
     return manifest
 
