@@ -258,28 +258,35 @@ def load_and_compute_all_timeframes(base_timeframe='M5', data_dir='data'):
 
     data_dir = Path(data_dir)
 
-    # Timeframe file mappings
+    # Timeframe file mappings with flexible fallbacks
     timeframe_files = {
-        'M5': 'xauusd_m5.csv',
-        'M15': 'xauusd_m15.csv',
-        'H1': 'xauusd_h1_from_m1.csv',
-        'H4': 'xauusd_h4_from_m1.csv',
-        'D1': 'xauusd_d1_from_m1.csv',
-        'W1': 'xauusd_w1.csv',  # Optional - will skip if not found
+        'M5': ['xauusd_m5.csv', 'new_data/xauusd_m5.csv'],
+        'M15': ['xauusd_m15.csv', 'new_data/xauusd_m15.csv'],
+        'H1': ['xauusd_h1.csv', 'xauusd_h1_from_m1.csv', 'new_data/xauusd_h1.csv'],
+        'H4': ['xauusd_h4.csv', 'xauusd_h4_from_m1.csv', 'new_data/xauusd_h4.csv'],
+        'D1': ['xauusd_d1.csv', 'xauusd_d1_from_m1.csv', 'new_data/xauusd_d1.csv'],
+        'W1': ['xauusd_w1.csv', 'new_data/xauusd_w1.csv'],
     }
 
     # Load and compute features for each timeframe
     tf_features = {}
 
-    for tf_name, filename in timeframe_files.items():
-        filepath = data_dir / filename
+    for tf_name, candidates in timeframe_files.items():
+        filepath = None
+        for cand in candidates:
+            p = data_dir / cand
+            if p.exists():
+                filepath = p
+                filename = cand
+                break
 
-        if not filepath.exists():
+        if not filepath:
             if tf_name == 'W1':
                 logger.warning(f"⚠️  {tf_name} file not found, skipping (optional)")
                 continue
             else:
-                raise FileNotFoundError(f"Required file not found: {filepath}")
+                tried_paths = [str(data_dir / c) for c in candidates]
+                raise FileNotFoundError(f"Required file for {tf_name} not found. Looked in: {tried_paths}")
 
         # Load data
         logger.info(f"\n📥 Loading {tf_name} from {filename}...")

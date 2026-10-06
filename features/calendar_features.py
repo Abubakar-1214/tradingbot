@@ -156,8 +156,8 @@ def compute_calendar_features(df_timestamps, calendar):
     is_high_impact = np.zeros(n)
     in_event_window = np.zeros(n)
     event_volatility_expected = np.ones(n)
-    event_type_nfp = np.zeros(n)
-    event_type_fomc = np.zeros(n)
+    event_type_nfp = np.zeros(n, dtype=bool)
+    event_type_fomc = np.zeros(n, dtype=bool)
     days_since_event = np.full(n, 30.0)
     event_density = np.zeros(n)
 
@@ -197,8 +197,8 @@ def compute_calendar_features(df_timestamps, calendar):
     result['is_high_impact'] = is_high_impact
     result['in_event_window'] = in_event_window
     result['event_volatility_expected'] = event_volatility_expected
-    result['event_type_nfp'] = event_type_nfp
-    result['event_type_fomc'] = event_type_fomc
+    result['event_type_nfp'] = event_type_nfp.astype(float)
+    result['event_type_fomc'] = event_type_fomc.astype(float)
 
     # Normalize some features
     result['hours_to_event'] = result['hours_to_event'] / 168.0  # Normalize to 0-1

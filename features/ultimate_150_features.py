@@ -75,14 +75,25 @@ def make_ultimate_features(base_timeframe='M5', data_dir='data'):
 
     from features.macro_features import load_macro_data, compute_macro_features
 
-    # Load base timeframe data with close prices
-    base_data_file = {
-        'M5': 'xauusd_m5.csv',
-        'M15': 'xauusd_m15.csv',
-        'H1': 'xauusd_h1_from_m1.csv',
-    }.get(base_timeframe, 'xauusd_m5.csv')
+    # Load base timeframe data with close prices (flexible candidates)
+    base_candidates = {
+        'M5': ['xauusd_m5.csv', 'new_data/xauusd_m5.csv'],
+        'M15': ['xauusd_m15.csv', 'new_data/xauusd_m15.csv'],
+        'H1': ['xauusd_h1.csv', 'xauusd_h1_from_m1.csv', 'new_data/xauusd_h1.csv'],
+    }.get(base_timeframe, ['xauusd_h1.csv', 'xauusd_m5.csv'])
 
-    df_gold = pd.read_csv(f"{data_dir}/{base_data_file}")
+    base_filepath = None
+    for cand in base_candidates:
+        p = Path(data_dir) / cand
+        if p.exists():
+            base_filepath = p
+            break
+
+    if not base_filepath:
+        tried_paths = [str(Path(data_dir) / c) for c in base_candidates]
+        raise FileNotFoundError(f"Base data file for {base_timeframe} not found in {data_dir}. Tried: {tried_paths}")
+
+    df_gold = pd.read_csv(base_filepath)
     df_gold['time'] = pd.to_datetime(df_gold['time'])
     df_gold = df_gold.set_index('time').sort_index()
 
@@ -97,7 +108,13 @@ def make_ultimate_features(base_timeframe='M5', data_dir='data'):
 
     from features.calendar_features import load_economic_calendar, compute_calendar_features
 
-    calendar = load_economic_calendar(filepath=f"{data_dir}/economic_events_2015_2025.json")
+    cal_candidates = [
+        Path(data_dir) / "economic_events_2015_2025.json",
+        Path(data_dir) / "new_data" / "economic_calendar.json",
+        Path(data_dir) / "economic_calendar.json",
+    ]
+    cal_file = next((str(p) for p in cal_candidates if p.exists()), str(cal_candidates[0]))
+    calendar = load_economic_calendar(filepath=cal_file)
 
     # Use the base timeframe index
     base_index = tf_features[base_timeframe].index

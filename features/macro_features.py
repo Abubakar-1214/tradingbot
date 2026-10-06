@@ -35,40 +35,77 @@ def load_macro_data(data_dir='data'):
     data_dir = Path(data_dir)
 
     macro_files = {
-        'dxy': 'dxy_daily.csv',
-        'spx': 'spx_daily.csv',
-        'us10y': 'us10y_daily.csv',
-        'vix': 'vix_daily.csv',
-        'oil': 'oil_wti_daily.csv',
-        'btc': 'bitcoin_daily.csv',
-        'eur': 'eurusd_daily.csv',
-        'silver': 'silver_daily.csv',
-        'gld': 'gld_etf_daily.csv',
+        'dxy': ['dxy_daily.csv', 'new_data/dxy_daily.csv'],
+        'spx': ['spx_daily.csv', 'new_data/spx_daily.csv'],
+        'us10y': ['us10y_daily.csv', 'new_data/us10y_daily.csv'],
+        'vix': ['vix_daily.csv', 'new_data/vix_daily.csv'],
+        'oil': ['oil_wti_daily.csv', 'oil_daily.csv', 'new_data/oil_wti_daily.csv', 'new_data/oil_daily.csv'],
+        'btc': ['bitcoin_daily.csv', 'btc_daily.csv', 'new_data/bitcoin_daily.csv', 'new_data/btc_daily.csv'],
+        'eur': ['eurusd_daily.csv', 'eur_daily.csv', 'new_data/eurusd_daily.csv'],
+        'silver': ['silver_daily.csv', 'new_data/silver_daily.csv'],
+        'gld': ['gld_etf_daily.csv', 'gld_daily.csv', 'new_data/gld_etf_daily.csv'],
     }
 
     macro_dict = {}
 
-    for name, filename in macro_files.items():
-        filepath = data_dir / filename
+    for name, filenames in macro_files.items():
+        found = False
+        for fn in filenames:
+            filepath = data_dir / fn
+            if filepath.exists():
+                df = pd.read_csv(filepath)
+                # Convert to timezone-naive datetime from the start
+                time_col = 'time' if 'time' in df.columns else ('date' if 'date' in df.columns else df.columns[0])
+                df[time_col] = pd.to_datetime(df[time_col], utc=True).dt.tz_localize(None)
+                df = df.set_index(time_col).sort_index()
 
-        if filepath.exists():
-            df = pd.read_csv(filepath)
-            # Convert to timezone-naive datetime from the start
-            df['time'] = pd.to_datetime(df['time'], utc=True).dt.tz_localize(None)
-            df = df.set_index('time').sort_index()
+                # Use 'close' or 'Close' column
+                if 'close' in df.columns:
+                    macro_dict[name] = df['close']
+                elif 'Close' in df.columns:
+                    macro_dict[name] = df['Close']
+                else:
+                    logger.warning(f"⚠️  No close price found for {name} in {fn}")
+                    continue
 
-            # Use 'close' or 'Close' column
-            if 'close' in df.columns:
-                macro_dict[name] = df['close']
-            elif 'Close' in df.columns:
-                macro_dict[name] = df['Close']
-            else:
-                logger.warning(f"⚠️  No close price found for {name}")
-                continue
+                logger.info(f"   ✅ {name.upper()}: {len(df):,} bars (from {fn})")
+                found = True
+                break
 
-            logger.info(f"   ✅ {name.upper()}: {len(df):,} bars")
-        else:
-            logger.warning(f"⚠️  {name.upper()} file not found: {filename}")
+    # Fallback to consolidated macro_daily.csv if any are missing
+    consolidated_candidates = [
+        data_dir / 'macro_daily.csv',
+        data_dir / 'new_data' / 'macro_daily.csv'
+    ]
+    for cons_path in consolidated_candidates:
+        if cons_path.exists():
+            try:
+                cons_df = pd.read_csv(cons_path)
+                time_col = 'time' if 'time' in cons_df.columns else ('date' if 'date' in cons_df.columns else cons_df.columns[0])
+                cons_df[time_col] = pd.to_datetime(cons_df[time_col], utc=True).dt.tz_localize(None)
+                cons_df = cons_df.set_index(time_col).sort_index()
+
+                col_mapping = {
+                    'dxy': ['dxy_close', 'dxy', 'Close_dxy'],
+                    'spx': ['spx_close', 'spx', 'Close_spx'],
+                    'vix': ['vix_close', 'vix', 'Close_vix'],
+                    'oil': ['oil_close', 'oil_wti_close', 'oil'],
+                    'btc': ['btc_close', 'bitcoin_close', 'btc'],
+                    'silver': ['silver_close', 'silver'],
+                    'gld': ['gld_close', 'gld_etf_close', 'gld'],
+                    'us10y': ['us10y_close', 'us10y'],
+                    'eur': ['eur_close', 'eurusd_close', 'eur']
+                }
+
+                for name, cols in col_mapping.items():
+                    if name not in macro_dict:
+                        for col in cols:
+                            if col in cons_df.columns:
+                                macro_dict[name] = cons_df[col].dropna()
+                                logger.info(f"   ✅ {name.upper()}: {len(macro_dict[name]):,} bars (from {cons_path.name})")
+                                break
+            except Exception as e:
+                logger.warning(f"⚠️ Error reading consolidated macro file {cons_path}: {e}")
 
     logger.info(f"\n✅ Loaded {len(macro_dict)} macro sources")
 
