@@ -29,6 +29,7 @@ data/*.json
 # Model checkpoints - keep structure but exclude large files
 artifacts/
 *.zip
+!data_colab.zip
 *.tar.gz
 train/ppo_*.zip
 train/dreamer*/
