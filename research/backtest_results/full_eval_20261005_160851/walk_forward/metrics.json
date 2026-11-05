@@ -1,0 +1,42 @@
+{
+  "strategy": "DonchianBreakout",
+  "data": "xauusd_d1_wf12",
+  "start": "2023-07-25 00:00:00",
+  "end": "2024-11-05 00:00:00",
+  "params": {
+    "train_bars": "1200",
+    "embargo_bars": "25",
+    "test_bars": "400",
+    "window": "12"
+  },
+  "cost_model": {
+    "spread": 0.000175,
+    "commission": 3e-05,
+    "slippage": 5e-05,
+    "round_trip_total": 0.00041,
+    "description": "one-way spread=0.000175 (= round-trip 0.000350), commission/side=0.000030, slippage/fill=0.000050, round-trip total=0.000410"
+  },
+  "seed": 42,
+  "metrics": {
+    "total_return_pct": 29.22228698540855,
+    "buy_hold_return_pct": 43.12438681345262,
+    "annual_return_pct": 17.528333057634548,
+    "sharpe": 1.6323349298436207,
+    "sortino": 2.9419010262726877,
+    "calmar": 3.877676028244368,
+    "max_drawdown_pct": -4.520319111230798,
+    "win_rate_pct": 83.33333333333334,
+    "profit_factor": 11.17613219228483,
+    "expectancy_pct": 5.106538718070044,
+    "sqn": 2.7641863743841903,
+    "num_trades": 6,
+    "exposure_time_pct": 59.0,
+    "commissions_usd": 3.5080754092284643,
+    "equity_final": 12922.228698540855,
+    "equity_peak": 13081.280698540855,
+    "avg_trade_pct": 5.032543801864509,
+    "best_trade_pct": 9.319312565475713,
+    "worst_trade_pct": -3.0108917346464703
+  },
+  "zero_cost_compare": null
+}

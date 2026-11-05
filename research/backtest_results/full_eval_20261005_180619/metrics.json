@@ -1,0 +1,37 @@
+{
+  "strategy": "SmaCrossAtr_zero_cost",
+  "data": "xauusd_h1_from_m1",
+  "start": "2014-01-14 00:00:00",
+  "end": "2026-10-05 13:00:00",
+  "params": {},
+  "cost_model": {
+    "spread": 0.0,
+    "commission": 0.0,
+    "slippage": 0.0,
+    "round_trip_total": 0.0,
+    "description": "one-way spread=0.000000 (= round-trip 0.000000), commission/side=0.000000, slippage/fill=0.000000, round-trip total=0.000000"
+  },
+  "seed": 42,
+  "metrics": {
+    "total_return_pct": 34.504935714286056,
+    "buy_hold_return_pct": 216.68522495698545,
+    "annual_return_pct": 1.9258828966771002,
+    "sharpe": 0.45862888702292753,
+    "sortino": 0.7269746135644585,
+    "calmar": 0.22821242496214347,
+    "max_drawdown_pct": -8.438992298498082,
+    "win_rate_pct": 43.51005484460695,
+    "profit_factor": 1.2192896136706317,
+    "expectancy_pct": 0.0618180735668068,
+    "sqn": 1.843819376126911,
+    "num_trades": 547,
+    "exposure_time_pct": 14.147926731778526,
+    "commissions_usd": 0.0,
+    "equity_final": 13450.493571428606,
+    "equity_peak": 14153.176714285757,
+    "avg_trade_pct": 0.05881499144664293,
+    "best_trade_pct": 4.961994107937562,
+    "worst_trade_pct": -2.6941733188920014
+  },
+  "zero_cost_compare": null
+}

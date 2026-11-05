@@ -59,6 +59,7 @@ DEFAULTS: Dict[str, Any] = {
     "correlation_block_long_on_up": 0.01,
     "event_position_scale": 0.5,  # fraction of max_position allowed in event windows
     "initial_equity": 10_000.0,
+    "allow_min_lot_override": False,
 }
 
 
@@ -109,6 +110,7 @@ class RiskSupervisor:
         self.correlation_block_long_on_up = float(_cfg(config, "correlation_block_long_on_up"))
         self.event_position_scale = float(_cfg(config, "event_position_scale"))
         self.initial_equity = float(_cfg(config, "initial_equity"))
+        self.allow_min_lot_override = bool(_cfg(config, "allow_min_lot_override"))
 
         for name, val in [
             ("max_daily_loss", self.max_daily_loss),
@@ -318,6 +320,9 @@ class RiskSupervisor:
 
         # Equity source: live callers pass state['equity']; fall back to stored.
         equity = float(state.get("equity", self.current_equity) or self.current_equity)
+        if not self.trade_history and self.peak_equity == self.initial_equity and equity > 0:
+            self.daily_start_equity = equity
+            self.peak_equity = equity
         self.current_equity = equity
         self.peak_equity = max(self.peak_equity, equity)
 
@@ -343,12 +348,15 @@ class RiskSupervisor:
                 return self._reject(f"MAX_DRAWDOWN: {dd:.2%} > {self.max_drawdown:.2%}")
 
         # 4. Position size limit (explicit fraction, not abs(action))
-        if not 0.0 < requested_size <= 1.0:
+        if requested_size <= 0.0:
             return self._reject(f"INVALID_SIZE: {requested_size:.4f}")
-        if requested_size > self.max_position_size:
-            return self._reject(
-                f"POSITION_TOO_LARGE: {requested_size:.2%} > {self.max_position_size:.2%}"
-            )
+        if not self.allow_min_lot_override:
+            if requested_size > 1.0:
+                return self._reject(f"INVALID_SIZE: {requested_size:.4f}")
+            if requested_size > self.max_position_size:
+                return self._reject(
+                    f"POSITION_TOO_LARGE: {requested_size:.2%} > {self.max_position_size:.2%}"
+                )
 
         # 5. Consecutive losses breaker
         if self.consecutive_losses >= self.max_consecutive_losses:
@@ -456,7 +464,7 @@ class RiskSupervisor:
             logger.warning("%d consecutive losses", self.consecutive_losses)
         dd = (self.peak_equity - self.current_equity) / self.peak_equity if self.peak_equity else 0.0
         if dd > 0.10:
-            logger.warning("Drawdown: %.2%%", dd)
+            logger.warning("Drawdown: %.2f%%", dd * 100.0)
 
     # ------------------------------------------------------------------ #
     # Halts & introspection

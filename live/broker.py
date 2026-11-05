@@ -95,6 +95,7 @@ class OrderRequest:
     magic: int = 0
     token: Optional[str] = None        # idempotency key
     reduce_only: bool = False          # flatten a position (close semantics)
+    position: Optional[int] = None     # broker position ticket to close (mandatory on hedging accounts)
 
 
 @dataclass(frozen=True)
@@ -130,6 +131,7 @@ class PositionInfo:
     sl: Optional[float]
     tp: Optional[float]
     magic: int = 0
+    profit: float = 0.0
 
     def to_dict(self) -> Dict[str, object]:
         return {
@@ -141,6 +143,7 @@ class PositionInfo:
             "sl": self.sl,
             "tp": self.tp,
             "magic": self.magic,
+            "profit": self.profit,
         }
 
     @classmethod
@@ -154,6 +157,7 @@ class PositionInfo:
             sl=None if d.get("sl") is None else float(d["sl"]),
             tp=None if d.get("tp") is None else float(d["tp"]),
             magic=int(d.get("magic", 0)),
+            profit=float(d.get("profit", 0.0)),
         )
 
 

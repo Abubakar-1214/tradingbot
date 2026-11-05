@@ -47,6 +47,8 @@ class TradeManager:
         atr_now: float,
         trade_meta: dict | None = None,
     ) -> list[ModifySL | PartialClose | Close]:
+        if not getattr(getattr(self.cfg, "broker", None), "use_sl_tp", True):
+            return []
         meta = trade_meta or {}
         initial_sl = meta.get("initial_sl", position.sl)
         risk = (
@@ -60,9 +62,16 @@ class TradeManager:
         sign = 1.0 if position.side == "buy" else -1.0
         r_multiple = (close - float(position.open_price)) * sign / risk
         behavior = self.behavior
+
+        # Use tier-specific parameters from trade_meta if available
+        max_bars = int(meta.get("max_bars_in_trade", behavior.max_bars_in_trade))
+        breakeven_at_r = float(meta.get("breakeven_at_r", behavior.breakeven_at_r))
+        trail_start_r = float(meta.get("trail_start_r", behavior.trail_start_r))
+        trail_atr_mult = float(meta.get("trail_atr_mult", behavior.trail_atr_mult))
+
         if (
-            behavior.max_bars_in_trade > 0
-            and bars_held >= behavior.max_bars_in_trade
+            max_bars > 0
+            and bars_held >= max_bars
             and r_multiple < 0.5
         ):
             return [Close(position.ticket, "TIME_STOP")]
@@ -71,12 +80,12 @@ class TradeManager:
         current_sl = position.sl
         target_sl = current_sl
         spread_buffer = float(position.open_price) * self.spread_fraction
-        if r_multiple >= behavior.breakeven_at_r:
+        if r_multiple >= breakeven_at_r:
             breakeven = float(position.open_price) + sign * spread_buffer
             if self._tightens(position.side, current_sl, breakeven):
                 target_sl = breakeven
-        if r_multiple >= behavior.trail_start_r and atr_now > 0.0:
-            trailing = close - sign * behavior.trail_atr_mult * float(atr_now)
+        if r_multiple >= trail_start_r and atr_now > 0.0:
+            trailing = close - sign * trail_atr_mult * float(atr_now)
             reference_sl = target_sl
             if self._tightens(position.side, reference_sl, trailing):
                 target_sl = trailing

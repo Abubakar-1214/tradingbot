@@ -118,7 +118,7 @@ def plot_results(equity_curve, positions, dates, metrics, save_path='results.png
     fig, axes = plt.subplots(3, 1, figsize=(14, 10))
 
     # Equity curve
-    axes[0].plot(dates, equity_curve, linewidth=2, color='green')
+    axes[0].plot(dates, equity_curve[1:], linewidth=2, color='green')
     axes[0].set_title(f'Equity Curve - Final: ${equity_curve[-1]:.2f}', fontsize=14, fontweight='bold')
     axes[0].set_ylabel('Equity ($)', fontsize=12)
     axes[0].grid(True, alpha=0.3)
@@ -126,8 +126,8 @@ def plot_results(equity_curve, positions, dates, metrics, save_path='results.png
     axes[0].legend()
 
     # Drawdown
-    cummax = np.maximum.accumulate(equity_curve)
-    drawdown = (equity_curve - cummax) / cummax * 100
+    cummax = np.maximum.accumulate(equity_curve[1:])
+    drawdown = (equity_curve[1:] - cummax) / cummax * 100
     axes[1].fill_between(dates, drawdown, 0, color='red', alpha=0.3)
     axes[1].plot(dates, drawdown, color='darkred', linewidth=1)
     axes[1].set_title(f'Drawdown - Max: {metrics["max_drawdown"]:.2f}%', fontsize=14, fontweight='bold')

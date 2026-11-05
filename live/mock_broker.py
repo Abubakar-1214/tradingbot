@@ -100,7 +100,24 @@ class MockBroker(BaseBroker):
                 continue
             if magic is not None and p.magic != magic:
                 continue
-            out.append(p)
+            if p.profit != 0.0:
+                profit = p.profit
+            else:
+                tick = self.get_tick(p.symbol)
+                cur = tick["bid"] if p.side == "buy" else tick["ask"]
+                pts = (cur - p.open_price) if p.side == "buy" else (p.open_price - cur)
+                profit = pts * p.volume * 100.0
+            out.append(PositionInfo(
+                ticket=p.ticket,
+                symbol=p.symbol,
+                side=p.side,
+                volume=p.volume,
+                open_price=p.open_price,
+                sl=p.sl,
+                tp=p.tp,
+                magic=p.magic,
+                profit=float(profit),
+            ))
         return out
 
     def submit_order(self, req: OrderRequest) -> OrderResult:

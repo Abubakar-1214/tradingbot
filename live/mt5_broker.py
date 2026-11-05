@@ -153,7 +153,15 @@ class Mt5Broker(BaseBroker):
         mt5 = self._require_connected()
         pos = mt5.positions_get(symbol=symbol or self.symbol)
         if pos is None:
-            raise BrokerError(f"positions_get() failed: {mt5.last_error()}")
+            err = mt5.last_error()
+            if isinstance(err, tuple) and len(err) > 0 and err[0] == -4:
+                try:
+                    self.connect()
+                    pos = mt5.positions_get(symbol=symbol or self.symbol)
+                except Exception:
+                    pass
+            if pos is None:
+                raise BrokerError(f"positions_get() failed: {err}. Please ensure MetaTrader 5 desktop application is open and logged into your account.")
         out = []
         for p in pos:
             if magic is not None and int(p.magic) != magic:
@@ -167,6 +175,7 @@ class Mt5Broker(BaseBroker):
                 sl=None if float(p.sl) == 0.0 else float(p.sl),
                 tp=None if float(p.tp) == 0.0 else float(p.tp),
                 magic=int(p.magic),
+                profit=float(getattr(p, "profit", 0.0)),
             ))
         return out
 
@@ -216,6 +225,8 @@ class Mt5Broker(BaseBroker):
                 "type_time": 0,  # ORDER_TIME_GTC
                 "type_filling": 1,  # ORDER_FILLING_IOC
             }
+            if req.position is not None:
+                request["position"] = int(req.position)
             if req.sl is not None:
                 request["sl"] = float(req.sl)
             if req.tp is not None:
@@ -276,6 +287,7 @@ class Mt5Broker(BaseBroker):
             magic=int(p.magic),
             reduce_only=True,
             token=f"close-{ticket}",
+            position=ticket,
         )
         return self.submit_order(req)
 

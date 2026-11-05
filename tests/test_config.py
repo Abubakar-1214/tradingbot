@@ -112,7 +112,12 @@ def test_invalid_mode_raises() -> None:
 
 def test_invalid_symbol_raises() -> None:
     with pytest.raises(ValueError):
-        load_config(_env={"SYMBOL": "BTCUSD"})
+        load_config(_env={"SYMBOL": "   "})
+
+
+def test_crypto_and_forex_symbols_allowed() -> None:
+    cfg = load_config(_env={"SYMBOL": "BTCUSD"})
+    assert cfg.symbol_cfg == "BTCUSD" 
 
 
 def test_invalid_timeframe_raises() -> None:

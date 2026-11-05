@@ -33,14 +33,14 @@ logger = logging.getLogger(__name__)
 
 # Environment settings (cost model defaults live in env/dreamer_trading_env.py)
 WINDOW = 64
-TRAIN_END_DATE = "2022-01-01"
-ENV_KWARGS = dict(DEFAULT_ENV_KWARGS, window=WINDOW)
+TRAIN_END_DATE = "2026-01-01"
+ENV_KWARGS = dict(DEFAULT_ENV_KWARGS, window=WINDOW, allow_short=bool(DEFAULT_ENV_KWARGS["allow_short"]))
 
 # DreamerV3 hyperparameters
 BATCH_SIZE = 16
 PREFILL_STEPS = 5_000  # Random exploration to fill buffer
 TRAIN_STEPS = 1_000_000  # Training steps
-TRAIN_EVERY = 4  # Train every N environment steps
+TRAIN_EVERY = 100000 # Train every N environment steps (2=more GPU utilization on H200)
 SAVE_EVERY = 10_000
 
 SAVE_DIR = "train/dreamer_ultimate"
@@ -55,6 +55,7 @@ def main():
     parser.add_argument('--resume', type=str, default=None, help='Resume from checkpoint')
     parser.add_argument('--base-tf', type=str, default='M5', help='Base timeframe (M5/M15/H1)')
     parser.add_argument('--save-every', type=int, default=SAVE_EVERY, help='Checkpoint save frequency')
+    parser.add_argument('--train-every', type=int, default=TRAIN_EVERY, help='Train every N env steps (lower=more GPU use)')
     args = parser.parse_args()
 
     logger.info("="*70)
@@ -184,7 +185,7 @@ def main():
         episode_reward += reward
 
         # Train agent every few steps
-        if step % TRAIN_EVERY == 0:
+        if step % args.train_every == 0:
             loss = agent.train_step(batch_size=args.batch_size)
 
         # Episode end

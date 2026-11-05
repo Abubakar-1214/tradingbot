@@ -38,12 +38,21 @@ def load_economic_calendar(filepath='data/economic_events_2015_2025.json'):
     with open(filepath, 'r') as f:
         events = json.load(f)
 
-    # Convert datetime strings to datetime objects and rename to 'time'
+    # Convert datetime strings to datetime objects and ensure 'time' and 'datetime' are populated
+    valid_events = []
     for event in events:
-        event['time'] = pd.to_datetime(event['datetime'])
-        # Keep datetime for backward compatibility if needed
-        if 'datetime' in event and 'time' not in event:
-            event['time'] = event['datetime']
+        raw_dt = event.get('time') or event.get('datetime') or event.get('timestamp') or event.get('date')
+        if raw_dt is not None:
+            parsed_dt = pd.to_datetime(raw_dt)
+            event['time'] = parsed_dt
+            event['datetime'] = parsed_dt
+            valid_events.append(event)
+        else:
+            logger.warning(f"⚠️  Skipping event without timestamp: {event}")
+
+    # Sort chronologically so searchsorted works reliably
+    valid_events.sort(key=lambda e: e['time'])
+    events = valid_events
 
     logger.info(f"   ✅ Loaded {len(events)} economic events")
 
@@ -216,12 +225,12 @@ def compute_calendar_features(df_timestamps, calendar):
     logger.info(f"✅ Processed {len(result):,} timestamps")
 
     # Statistics
-    high_impact_count = result['is_high_impact'].sum()
-    event_window_count = result['in_event_window'].sum()
+    high_impact_count = int(np.sum(is_high_impact))
+    event_window_count = int(np.sum(in_event_window))
 
     logger.info(f"\n📊 Calendar statistics:")
-    logger.info(f"   • High impact events ahead: {int(high_impact_count):,} timestamps")
-    logger.info(f"   • In event window (±2h): {int(event_window_count):,} timestamps")
+    logger.info(f"   • High impact events ahead: {high_impact_count:,} timestamps")
+    logger.info(f"   • In event window (±2h): {event_window_count:,} timestamps")
 
     # List features
     logger.info("\n📊 Features created:")

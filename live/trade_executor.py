@@ -53,6 +53,7 @@ import pandas as pd
 
 from backtest.strategies import atr as causal_atr
 from core.config import AppConfig, SLTP_MODE_MODEL
+from core.adaptive_tier import AccountTier, resolve_tier
 from live.broker import (
     BaseBroker,
     BrokerError,
@@ -190,17 +191,27 @@ class TradeExecutor:
         self.halt_reason = f"startup reconciliation drift: {rec.describe()}"
 
         if self.close_on_recon_drift:
-            # Close broker positions we do not own per local state (same magic).
+            # ADOPT broker positions so existing / prior session trades are NEVER cut, but safely controlled!
             for b in rec.unknown_in_broker:
-                if b.magic == self.cfg.broker.magic:
-                    res = self.broker.close_position(b.ticket)
-                    logger.warning("Recon close of unknown broker pos %s -> %s",
-                                   b.ticket, res)
+                if b.symbol == self.cfg.broker.symbol:
+                    self._positions[b.ticket] = b
+                    if b.ticket not in self.trade_meta:
+                        self.trade_meta[b.ticket] = {
+                            "open_time": getattr(b, "open_time", time.time()),
+                            "peak_profit": float(getattr(b, "profit", 0.0)),
+                            "entry_balance": 0.0,
+                        }
+                    logger.info("🛡️ [RECOVERED & ADOPTED POSITION] Ticket %s (%s %.2f lots at %.5f) adopted — bot will manage it to profit!",
+                                b.ticket, b.side, b.volume, b.open_price)
             # Drop phantom local positions the broker does not have.
             for m in rec.missing_in_broker:
                 self._positions.pop(m.ticket, None)
                 self.trade_meta.pop(m.ticket, None)
             self._save_local_state()
+            if not rec.mismatched:
+                logger.info("Reconciliation auto-healed & adopted active positions — cleared halt.")
+                self.halted = False
+                self.halt_reason = ""
         return rec
 
     # ------------------------------------------------------------------ #
@@ -250,11 +261,31 @@ class TradeExecutor:
     # ------------------------------------------------------------------ #
     # Position size / volume helpers (HONEST lot math)
     # ------------------------------------------------------------------ #
+    def _contract_size(self) -> float:
+        """Resolve contract size dynamically from broker or symbol conventions."""
+        if hasattr(self.broker, "_mt5") and self.broker._mt5 is not None:
+            try:
+                info = self.broker._mt5.symbol_info(self.cfg.broker.symbol)
+                if info is not None and getattr(info, "trade_contract_size", None):
+                    val = float(info.trade_contract_size)
+                    if val > 0:
+                        return val
+            except Exception:
+                pass
+        sym = self.cfg.broker.symbol.upper()
+        if "XAU" in sym or "GOLD" in sym:
+            return 100.0
+        if "BTC" in sym or "ETH" in sym or "SOL" in sym:
+            return 1.0
+        if any(fx in sym for fx in ("EUR", "GBP", "USD", "JPY", "AUD", "CAD", "CHF", "NZD")):
+            return 100_000.0
+        return 100.0
+
     def _current_notional(self, price: float) -> float:
         """Aggregate notional exposure of every open local position (in $)."""
         total = 0.0
         for p in self._positions.values():
-            total += p.volume * XAUUSD_CONTRACT_SIZE * price
+            total += p.volume * self._contract_size() * price
         return total
 
     def fraction_and_volume(
@@ -284,22 +315,35 @@ class TradeExecutor:
         ideal_notional = min(fraction * equity, remaining_cap)
 
         volume = math.floor(
-            ideal_notional / (entry_price * XAUUSD_CONTRACT_SIZE) / LOT_STEP
+            ideal_notional / (entry_price * self._contract_size()) / LOT_STEP
         ) * LOT_STEP
-        if volume < MIN_LOT:
+
+        allow_min_override = getattr(self.cfg.risk, "allow_min_lot_override", False)
+        scalp_cfg = getattr(self.cfg, "scalp", None)
+        max_allowed = getattr(scalp_cfg, "max_open_positions", 2)
+        if allow_min_override and len(self._positions) < max_allowed and size_multiplier > 0:
+            # Dynamically calculate risk-based lots as account grows (allows multi-trade & hedging):
+            dollar_risk = equity * self.cfg.risk.risk_per_trade * size_multiplier
+            stop_dist = max(atr * self.cfg.broker.sl_atr_mult, 1e-4)
+            risk_units = dollar_risk / stop_dist
+            risk_lots = math.floor((risk_units / self._contract_size()) / LOT_STEP) * LOT_STEP
+            volume = max(MIN_LOT, risk_lots)
+        elif volume < MIN_LOT:
             if (
                 size_multiplier == 1.0
-                and MIN_LOT * entry_price * XAUUSD_CONTRACT_SIZE <= remaining_cap + 1e-9
+                and MIN_LOT * entry_price * self._contract_size() <= remaining_cap + 1e-9
             ):
                 volume = MIN_LOT
             else:
                 volume = 0.0
         return fraction, volume
 
-    def entry_sl_tp(self, side: str, entry: float, atr: float) -> Tuple[float, float]:
+    def entry_sl_tp(self, side: str, entry: float, atr: float, tier: Optional[AccountTier] = None) -> Tuple[float, float]:
+        sl_mult = tier.sl_atr_mult if tier is not None else self.cfg.broker.sl_atr_mult
+        tp_mult = tier.tp_atr_mult if tier is not None else self.cfg.broker.tp_atr_mult
         if side == "buy":
-            return entry - atr * self.cfg.broker.sl_atr_mult, entry + atr * self.cfg.broker.tp_atr_mult
-        return entry + atr * self.cfg.broker.sl_atr_mult, entry - atr * self.cfg.broker.tp_atr_mult
+            return entry - atr * sl_mult, entry + atr * tp_mult
+        return entry + atr * sl_mult, entry - atr * tp_mult
 
     def entry_sl_tp_model(
         self, side: str, entry: float, sl_frac: float, tp_frac: float
@@ -369,7 +413,7 @@ class TradeExecutor:
             return False, "BELOW_MIN_LOT: risk-capped size is smaller than broker MIN_LOT", None
 
         # The supervisor reviews the ACTUAL exposure this order would create.
-        actual_fraction = volume * XAUUSD_CONTRACT_SIZE * entry / equity
+        actual_fraction = volume * self._contract_size() * entry / equity
         md = market_data or self.build_market_data(df, tick)
         state = self.build_state(equity, position_side=0)
 
@@ -377,7 +421,9 @@ class TradeExecutor:
         if not approved:
             return False, f"RISK_REJECTED: {reason}", None
 
-        if (
+        if not getattr(self.cfg.broker, "use_sl_tp", True):
+            sl, tp = None, None
+        elif (
             self.cfg.behavior.sl_tp_mode == SLTP_MODE_MODEL
             and sl_frac is not None
             and tp_frac is not None
@@ -386,7 +432,13 @@ class TradeExecutor:
                 "buy" if direction == 1 else "sell", entry, sl_frac, tp_frac
             )
         else:
-            sl, tp = self.entry_sl_tp("buy" if direction == 1 else "sell", entry, atr)
+            tier = resolve_tier(
+                equity,
+                getattr(self.cfg, "adaptive_tier", None),
+                default_sl_atr_mult=self.cfg.broker.sl_atr_mult,
+                default_tp_atr_mult=self.cfg.broker.tp_atr_mult,
+            )
+            sl, tp = self.entry_sl_tp("buy" if direction == 1 else "sell", entry, atr, tier=tier)
         req = OrderRequest(
             symbol=self.cfg.broker.symbol,
             side="buy" if direction == 1 else "sell",
@@ -424,8 +476,10 @@ class TradeExecutor:
             }
             self.last_bar_time = bar_time
             self._save_local_state()
-            logger.info("ENTRY %s ticket=%s vol=%.2f sl=%.2f tp=%.2f (risk=%s)",
-                        req.side, res.ticket, req.volume, sl, tp, reason)
+            sl_str = f"{sl:.2f}" if sl is not None else "NONE"
+            tp_str = f"{tp:.2f}" if tp is not None else "NONE"
+            logger.info("ENTRY %s ticket=%s vol=%.2f sl=%s tp=%s (risk=%s)",
+                        req.side, res.ticket, req.volume, sl_str, tp_str, reason)
             return True, "APPROVED", res
         return False, f"ORDER_FAILED: {res.retcode_name} {res.message}", res
 
@@ -463,7 +517,7 @@ class TradeExecutor:
         if volume <= 0:
             return False, "BELOW_MIN_LOT: aggregate exposure cap reached or size below MIN_LOT", None
 
-        actual_fraction = volume * XAUUSD_CONTRACT_SIZE * entry / equity
+        actual_fraction = volume * self._contract_size() * entry / equity
         md = market_data or self.build_market_data(df, tick)
         state = self.build_state(equity, position_side=1 if direction == 1 else -1)
 

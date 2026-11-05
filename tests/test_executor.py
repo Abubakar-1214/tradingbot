@@ -371,3 +371,36 @@ def test_legacy_state_without_new_fields_loads(tmp_path) -> None:
     )
     assert loaded.get_trade_meta(99) == {}
     assert loaded.reference_equity == pytest.approx(EQUITY)
+
+
+def test_allow_min_lot_override_executes_on_small_account(tmp_path) -> None:
+    from dataclasses import replace
+    base_cfg = make_config()
+    override_risk = replace(base_cfg.risk, allow_min_lot_override=True)
+    cfg = replace(base_cfg, risk=override_risk)
+
+    clock = _clock()
+    broker = MockBroker(symbol="XAUUSD", balance=50.0, seed=42)
+    broker.connect()
+    risk = RiskSupervisor(config=cfg.risk, db_path=tmp_path / "micro_risk.db", now_fn=clock)
+    ex = TradeExecutor(broker, risk, cfg, local_state_file=tmp_path / "micro_bot.json")
+
+    df = sample_df()
+    # On $50 equity, it should allow 0.01 lot
+    frac, vol = ex.fraction_and_volume(equity=50.0, entry_price=2000.0, atr=5.0)
+    assert vol == 0.01
+
+    # On larger equity ($5,000), volume scales dynamically (0.10 lots with 2% risk, 2x ATR stop)
+    frac_large, vol_large = ex.fraction_and_volume(equity=5000.0, entry_price=2000.0, atr=5.0)
+    assert vol_large > 0.01
+
+    ok, reason, result = ex.execute_entry(
+        1,
+        equity=50.0,
+        df=df,
+        market_data=calm_md(ex, df),
+        bar_time="2024-01-08T10:00:00",
+    )
+    assert ok, f"Expected entry to succeed on $50 with override, got: {reason}"
+    assert result is not None
+    assert result.volume_filled == 0.01
