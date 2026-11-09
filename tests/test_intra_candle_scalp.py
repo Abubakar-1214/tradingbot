@@ -174,3 +174,107 @@ def test_htf_trend_filter_blocks_mismatches(tmp_path):
     positions = broker.get_positions()
     assert len(positions) == 1
     assert positions[0].side == "buy"
+
+
+def test_runner_auto_profit_catch_at_1_usd(tmp_path):
+    # Runner activates at $1.00: lets trade run, but catches when pulling back to <= $0.89!
+    trader, broker, cfg = _make_trader(tmp_path, target_profit=1.00)
+    df = _make_bars(trend="up")
+
+    pos = PositionInfo(
+        ticket=202,
+        symbol="XAUUSD",
+        side="buy",
+        volume=0.01,
+        open_price=2000.0,
+        sl=None,
+        tp=None,
+        magic=123,
+        profit=0.70,
+    )
+    broker._positions[202] = pos
+    trader.executor._positions[202] = pos
+
+    # Case 1: profit is $0.70 (below $1.00) -> Trade MUST stay open
+    trader._handle_intra_candle(df, bar_time="2026-10-30 12:30:00")
+    assert 202 in broker._positions
+
+    # Case 2: profit touches $1.10 -> Runner activates! Position stays open to run!
+    pos2 = PositionInfo(
+        ticket=202, symbol="XAUUSD", side="buy", volume=0.01,
+        open_price=2000.0, sl=None, tp=None, magic=123, profit=1.10
+    )
+    broker._positions[202] = pos2
+    trader.executor._positions[202] = pos2
+    trader._handle_intra_candle(df, bar_time="2026-10-30 12:30:01")
+    assert 202 in broker._positions
+
+    # Case 3: profit pulls back from peak $1.10 to $0.85 (below $0.89 floor) -> Auto Profit Catch secures profit!
+    pos3 = PositionInfo(
+        ticket=202, symbol="XAUUSD", side="buy", volume=0.01,
+        open_price=2000.0, sl=None, tp=None, magic=123, profit=0.85
+    )
+    broker._positions[202] = pos3
+    trader.executor._positions[202] = pos3
+    trader._handle_intra_candle(df, bar_time="2026-10-30 12:30:02")
+    assert 202 not in broker._positions
+
+
+def test_candle_aggregation_master_patterns():
+    # 1. Hammer Rejection (Long lower shadow, small upper wick) -> BUY (1)
+    df_hammer = pd.DataFrame([
+        {"open": 2000.0, "high": 2000.5, "low": 1995.0, "close": 1996.0},
+        {"open": 1996.0, "high": 1996.0, "low": 1990.0, "close": 1991.0},
+        {"open": 1991.0, "high": 1994.0, "low": 1991.0, "close": 1994.0},
+        {"open": 1994.0, "high": 1998.0, "low": 1993.0, "close": 1997.0},
+        {"open": 1997.0, "high": 2000.0, "low": 1996.0, "close": 1999.0},
+    ])
+    res_hammer = LiveTrader._aggregate_5_candles(df_hammer)
+    assert res_hammer["action"] == 1
+    assert "HAMMER" in res_hammer["pattern"]
+
+    # 2. Shooting Star Rejection (Long upper shadow, small lower wick) -> SELL (2)
+    df_star = pd.DataFrame([
+        {"open": 2000.0, "high": 2005.0, "low": 1999.5, "close": 2004.0},
+        {"open": 2004.0, "high": 2010.0, "low": 2003.0, "close": 2009.0},
+        {"open": 2009.0, "high": 2009.0, "low": 2005.0, "close": 2006.0},
+        {"open": 2006.0, "high": 2006.0, "low": 2002.0, "close": 2003.0},
+        {"open": 2003.0, "high": 2003.0, "low": 2000.5, "close": 2001.0},
+    ])
+    res_star = LiveTrader._aggregate_5_candles(df_star)
+    assert res_star["action"] == 2
+    assert "SHOOTING_STAR" in res_star["pattern"]
+
+    # 3. Indecision (Equal long wicks, Doji/Spinning top) -> WAIT (0)
+    df_chop = pd.DataFrame([
+        {"open": 2000.0, "high": 2005.0, "low": 1995.0, "close": 2000.0},
+        {"open": 2000.0, "high": 2006.0, "low": 1994.0, "close": 2001.0},
+        {"open": 2001.0, "high": 2004.0, "low": 1996.0, "close": 2000.0},
+        {"open": 2000.0, "high": 2005.0, "low": 1995.0, "close": 1999.8},
+        {"open": 1999.8, "high": 2004.0, "low": 1996.0, "close": 2000.1},
+    ])
+    res_chop = LiveTrader._aggregate_5_candles(df_chop)
+    assert res_chop["action"] == 0
+    assert "INDECISION" in res_chop["pattern"]
+
+
+def test_no_opposite_hedging_trades(tmp_path):
+    # When a SELL is already open, an uptrend signal MUST NOT open a BUY (no double hedge)!
+    trader, broker, cfg = _make_trader(tmp_path)
+    pos = PositionInfo(
+        ticket=301, symbol="XAUUSD", side="sell", volume=0.01,
+        open_price=2000.0, sl=None, tp=None, magic=123, profit=-0.50
+    )
+    broker._positions[301] = pos
+    trader.executor._positions[301] = pos
+
+    # Feed uptrend bars (would normally trigger BUY)
+    df_up = _make_bars(trend="up")
+    trader._handle_intra_candle(df_up, bar_time="2026-10-30 12:35:00")
+
+    # Strict rule: Still only 1 position (the original SELL), NO BUY opened!
+    positions = broker.get_positions()
+    assert len(positions) == 1
+    assert positions[0].side == "sell"
+
+

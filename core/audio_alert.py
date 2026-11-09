@@ -1,37 +1,69 @@
 """core/audio_alert.py — Non-blocking audio notifications for trade open/close."""
 
 import logging
+import os
 import threading
 
 logger = logging.getLogger("audio_alert")
 
 
 def play_trade_open_sound():
-    """Rising tone chime when a trade opens."""
+    """Play clear, audible notification through Windows speakers when a trade opens."""
     def _worker():
         try:
             import winsound
-            winsound.Beep(900, 120)
-            winsound.Beep(1400, 180)
+            wav_candidates = [
+                r"C:\Windows\Media\notify.wav",
+                r"C:\Windows\Media\Windows Ding.wav",
+                r"C:\Windows\Media\chimes.wav",
+            ]
+            played = False
+            for p in wav_candidates:
+                if os.path.exists(p):
+                    winsound.PlaySound(p, winsound.SND_FILENAME)
+                    played = True
+                    break
+            if not played:
+                winsound.MessageBeep(winsound.MB_ICONASTERISK)
         except Exception:
-            print("\a", end="", flush=True)
+            try:
+                import winsound
+                winsound.Beep(1000, 150)
+            except Exception:
+                print("\a", end="", flush=True)
 
-    threading.Thread(target=_worker, daemon=True).start()
+    threading.Thread(target=_worker, daemon=True, name="audio_open").start()
 
 
 def play_trade_close_sound(profit: float = 0.0):
-    """Pleasant triumph / profit chime when trade closes."""
+    """Play celebratory sound on profit exit or distinct alert on close."""
     def _worker():
         try:
             import winsound
             if profit >= 0:
-                winsound.Beep(1046, 100)  # C6
-                winsound.Beep(1318, 100)  # E6
-                winsound.Beep(1568, 220)  # G6 (Profit locked!)
+                wav_candidates = [
+                    r"C:\Windows\Media\tada.wav",
+                    r"C:\Windows\Media\chimes.wav",
+                    r"C:\Windows\Media\notify.wav",
+                ]
             else:
-                winsound.Beep(500, 250)
+                wav_candidates = [
+                    r"C:\Windows\Media\chord.wav",
+                    r"C:\Windows\Media\Windows Foreground.wav",
+                ]
+            played = False
+            for p in wav_candidates:
+                if os.path.exists(p):
+                    winsound.PlaySound(p, winsound.SND_FILENAME)
+                    played = True
+                    break
+            if not played:
+                winsound.MessageBeep(winsound.MB_OK if profit >= 0 else winsound.MB_ICONHAND)
         except Exception:
-            print("\a", end="", flush=True)
+            try:
+                import winsound
+                winsound.Beep(1200, 200)
+            except Exception:
+                print("\a", end="", flush=True)
 
-    threading.Thread(target=_worker, daemon=True).start()
-
+    threading.Thread(target=_worker, daemon=True, name="audio_close").start()

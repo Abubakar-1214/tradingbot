@@ -159,6 +159,7 @@ from core.config import (
 from core.model_artifacts import ModelArtifactError, load_manifest
 
 from core.observation import AccountState
+from core.tick_aggregator import AgexTickAggregator, AgexTickCandle, AgexRollingFeatures
 
 from live.broker import BaseBroker, BrokerError, PositionInfo
 
@@ -698,6 +699,12 @@ class LiveTrader:
 
         self._last_scalp_close_time: float = 0.0
 
+        scalp_cfg = getattr(self.cfg, "scalp", None)
+        ticks_k = int(getattr(scalp_cfg, "agex_ticks_per_candle", 100)) if scalp_cfg else 100
+        rolling_m = int(getattr(scalp_cfg, "agex_rolling_window", 20)) if scalp_cfg else 20
+        self.agex_tick_aggregation_enabled = bool(getattr(scalp_cfg, "agex_tick_aggregation_enabled", True)) if scalp_cfg else True
+        self.tick_aggregator = AgexTickAggregator(ticks_per_candle=ticks_k, rolling_window_size=rolling_m)
+
         self._bars_since_close: int = 999
 
         self._last_close_bar_time: Optional[str] = None
@@ -866,75 +873,29 @@ class LiveTrader:
 
         account = self._account_state(positions, equity)
 
-        raw = self.signal_source.decide(df, account)
+        # Research M1 strictly for trend and momentum (never look at M5 for trend):
+        m1_action, m1_info = self._get_m1_trend_and_momentum(fallback_df=df)
+
+        raw = Decision(m1_action, 1.0, 1.0, "M1_TREND_MOMENTUM", m1_info)
 
         decision = self.decision_engine.filter(
-
             raw,
-
             now_utc,
-
             position_side,
-
             self.executor.bars_since_last_loss,
-
             self.risk.trade_history,
-
         )
 
         if decision.action == 2 and not self.cfg.broker.allow_short:
-
             decision = Decision(
-
                 0,
-
                 decision.confidence,
-
                 0.0,
-
                 "SHORT_DISABLED",
-
                 decision.info,
-
                 decision.sl_frac,
-
                 decision.tp_frac,
-
             )
-
-
-
-        htf_trend = self.get_htf_trend()
-
-        if decision.action != 0 and htf_trend != 0 and decision.action != htf_trend:
-
-            trend_m15 = self._get_trend_for_tf("M15")
-
-            trend_m5 = self._get_trend_for_tf("M5")
-
-            trend_m1 = self._get_trend_for_tf("M1")
-
-            str_m15 = "BUY" if trend_m15 == 1 else "SELL" if trend_m15 == 2 else "NEUTRAL"
-
-            str_m5 = "BUY" if trend_m5 == 1 else "SELL" if trend_m5 == 2 else "NEUTRAL"
-
-            str_m1 = "BUY" if trend_m1 == 1 else "SELL" if trend_m1 == 2 else "NEUTRAL"
-
-            logger.info(
-
-                "🛡️ [TRI-CONFLUENCE] Signal wants %s | M15=%s | M5=%s | M1=%s -> Waiting for M15, M5, M1 alignment!",
-
-                "BUY" if decision.action == 1 else "SELL",
-
-                str_m15,
-
-                str_m5,
-
-                str_m1,
-
-            )
-
-            decision = Decision(0, decision.confidence, 0.0, "HTF_TREND_MISMATCH", decision.info)
 
 
 
@@ -1022,32 +983,20 @@ class LiveTrader:
 
                 reenter_bars = getattr(scalp_cfg, "reenter_bars_wait", 0)
 
-                min_eq = getattr(scalp_cfg, "multi_trade_min_equity", 80.0)
-
-                max_cfg_pos = getattr(scalp_cfg, "max_open_positions", 4)
-
-                allowed_max_positions = max_cfg_pos if equity > min_eq else 1
-
-
+                max_cfg_pos = int(getattr(scalp_cfg, "max_open_positions", 4)) if scalp_cfg else 4
 
                 can_open = False
-
                 if not remaining and (reenter_bars == 0 or self._bars_since_close >= reenter_bars):
-
                     can_open = True
-
-                elif len(remaining) < allowed_max_positions:
-
+                elif len(remaining) < max_cfg_pos:
                     can_open = True
+                else:
+                    logger.debug("🔒 Max positions limit reached (%d/%d active); waiting for exit.", len(remaining), max_cfg_pos)
+                    can_open = False
 
-                    logger.info(
 
-                            "⚡ [MULTI-TRADE ENTRY] Holding previous trade; opening new %s on trend change (Equity=$%.2f >= $%.2f)",
 
-                            "BUY" if decision.action == 1 else "SELL", equity, min_eq
-
-                        )
-
+                # Pure SMA Confluence - No RSI filter
 
 
                 if can_open:
@@ -1397,8 +1346,12 @@ class LiveTrader:
         pnl = self._current_balance() - entry_balance if ok else 0.0
 
         if ok:
-
-            play_trade_close_sound(float(getattr(position, "profit", pnl)))
+            realized_profit = float(getattr(position, "profit", pnl))
+            logger.info(
+                "💰 [TRADE CLOSED] Ticket #%d (%s) closed with PnL: $%.2f | Reason: %s | New Equity: $%.2f",
+                position.ticket, position.side.upper(), realized_profit, close_reason, equity_after,
+            )
+            play_trade_close_sound(realized_profit)
 
         events.append({
 
@@ -1588,195 +1541,239 @@ class LiveTrader:
 
 
 
-    def _get_trend_for_tf(self, timeframe: str) -> int:
+    @staticmethod
+    def _aggregate_4_candles(last_bars: pd.DataFrame) -> Dict[str, object]:
+        """Mathematically aggregates 4 M1 candles to predict the 5th candle.
+        
+        Formula & Rules (PKR Candle Aggregation Technique from Video):
+          - Open: Open price of the 1st candle
+          - Close: Close price of the 4th (last) candle
+          - High: Maximum high across all 4 candles
+          - Low: Minimum low across all 4 candles
+          - Total Range: agg_high - agg_low
+          - Body: |agg_close - agg_open|
+          - Upper Wick: agg_high - max(agg_open, agg_close)
+          - Lower Wick: min(agg_open, agg_close) - agg_low
 
-        """Fetch bars and compute SMA Fast/Slow trend for a given timeframe."""
+        Patterns:
+          1. INDECISION / SPINNING TOP / CHOP: Both wicks large with tiny body (< 20%) -> Action 0 (WAIT)
+          2. BULLISH HAMMER (REJECTION): Long lower wick (>= 35% range, >= 1.3*body) -> Action 1 (BUY 5th candle)
+          3. BULLISH EXPANSION: Green body (agg_close > agg_open, body >= 35% range) -> Action 1 (BUY 5th candle)
+          4. BEARISH SHOOTING STAR (REJECTION): Long upper wick (>= 35% range, >= 1.3*body) -> Action 2 (SELL 5th candle)
+          5. BEARISH EXPANSION: Red body (agg_close < agg_open, body >= 35% range) -> Action 2 (SELL 5th candle)
+          6. DIRECTIONAL FOLLOW: Body >= 20% with clear direction -> Action 1 or 2
+        """
+        agg_open = float(last_bars["open"].iloc[0])
+        agg_close = float(last_bars["close"].iloc[-1])
+        agg_high = float(last_bars["high"].max())
+        agg_low = float(last_bars["low"].min())
 
-        tf_name = timeframe.upper()
+        total_range = max(agg_high - agg_low, 0.001)
+        body = abs(agg_close - agg_open)
+        upper_wick = agg_high - max(agg_open, agg_close)
+        lower_wick = min(agg_open, agg_close) - agg_low
 
+        body_pct = (body / total_range) * 100.0
+        upper_pct = (upper_wick / total_range) * 100.0
+        lower_pct = (lower_wick / total_range) * 100.0
+
+        # Body position relative to High and Low (0% = at bottom/Low, 100% = at top/High)
+        body_center = (agg_open + agg_close) / 2.0
+        body_position_pct = ((body_center - agg_low) / total_range) * 100.0
+
+        pattern = "UNKNOWN"
+        action = 0
+
+        # Master Classifier (PKR Price Action Rules)
+        # 1. Indecision (Doji / Spinning Top / Equal wicks fight with tiny body < 20%)
+        if (body_pct < 20.0 and upper_pct >= 25.0 and lower_pct >= 25.0) or (body_pct < 10.0 and abs(upper_wick - lower_wick) / total_range < 0.25):
+            pattern = "INDECISION_CHOP"
+            action = 0
+        # 2. Bullish Rejection (Hammer / Pin Bar / Strong lower rejection)
+        elif lower_pct >= 35.0 and lower_wick >= 1.3 * max(body, 0.05) and upper_pct <= 25.0:
+            pattern = "BULLISH_HAMMER_REJECTION"
+            action = 1
+        # 3. Bullish Momentum / Expansion (Green Marubozu / Solid Bull body)
+        elif agg_close > agg_open and body_pct >= 35.0 and upper_pct <= 35.0 and body_position_pct >= 50.0:
+            pattern = "BULLISH_EXPANSION"
+            action = 1
+        # 4. Bearish Rejection (Shooting Star / Inverted Pin Bar / Strong upper rejection)
+        elif upper_pct >= 35.0 and upper_wick >= 1.3 * max(body, 0.05) and lower_pct <= 25.0:
+            pattern = "BEARISH_SHOOTING_STAR_REJECTION"
+            action = 2
+        # 5. Bearish Momentum / Expansion (Red Marubozu / Solid Bear body)
+        elif agg_close < agg_open and body_pct >= 35.0 and lower_pct <= 35.0 and body_position_pct <= 50.0:
+            pattern = "BEARISH_EXPANSION"
+            action = 2
+        # 6. Directional Follow (Body >= 20% with clear direction and aligned body position)
+        elif agg_close > agg_open and body_pct >= 20.0 and body_position_pct >= 50.0:
+            pattern = "BULLISH_MODERATE"
+            action = 1
+        elif agg_close < agg_open and body_pct >= 20.0 and body_position_pct <= 50.0:
+            pattern = "BEARISH_MODERATE"
+            action = 2
+        else:
+            pattern = "NEUTRAL_WAIT"
+            action = 0
+
+        return {
+            "agg_open": agg_open,
+            "agg_close": agg_close,
+            "agg_high": agg_high,
+            "agg_low": agg_low,
+            "total_range": total_range,
+            "body": body,
+            "upper_wick": upper_wick,
+            "lower_wick": lower_wick,
+            "body_pct": body_pct,
+            "upper_pct": upper_pct,
+            "lower_pct": lower_pct,
+            "body_position_pct": body_position_pct,
+            "pattern": pattern,
+            "action": action,
+        }
+
+    # Backward compatibility alias
+    _aggregate_5_candles = _aggregate_4_candles
+
+    def _get_m1_trend_and_momentum(self, fallback_df: Optional[pd.DataFrame] = None) -> tuple[int, Dict[str, object]]:
+        """Strictly evaluate Trend and Momentum by Aggregating the last 4 M1 candles to predict the 5th candle.
+        Returns:
+            (action, info_dict)
+            action: 1 for BUY, 2 for SELL, 0 for WAIT/NEUTRAL
+        """
         scalp_cfg = getattr(self.cfg, "scalp", None)
+        fast_period = int(getattr(scalp_cfg, "htf_fast_sma", 20)) if scalp_cfg else 20
+        slow_period = int(getattr(scalp_cfg, "htf_slow_sma", 50)) if scalp_cfg else 50
+        n_bars = slow_period + 30
 
-        fast_period = int(getattr(scalp_cfg, "htf_fast_sma", 20))
+        df_m1 = None
+        is_live_mt5 = (
+            self.cfg.trading_mode is TradingMode.LIVE
+            and hasattr(self.broker, "_mt5")
+            and getattr(self.broker, "_mt5", None) is not None
+        )
 
-        slow_period = int(getattr(scalp_cfg, "htf_slow_sma", 50))
-
-        n_bars = slow_period + 20
-
-
-
-        df_bars = None
-
-        if self.cfg.trading_mode is TradingMode.LIVE and hasattr(self.broker, "_mt5"):
-
+        if is_live_mt5:
             try:
-
                 mt5 = self.broker._mt5
-
-                tf = getattr(mt5, f"TIMEFRAME_{tf_name}", None)
-
-                if tf is not None:
-
-                    rates = mt5.copy_rates_from_pos(self.cfg.broker.symbol, tf, 0, n_bars)
-
-                    if rates is not None and len(rates) > 0:
-
-                        df_bars = pd.DataFrame(rates)
-
+                rates = mt5.copy_rates_from_pos(self.cfg.broker.symbol, mt5.TIMEFRAME_M1, 0, n_bars)
+                if rates is not None and len(rates) >= slow_period + 5:
+                    df_m1 = pd.DataFrame(rates)
             except Exception as exc:
+                logger.warning("Could not fetch M1 bars from MT5: %s", exc)
 
-                logger.warning("Could not fetch %s bars from MT5: %s", tf_name, exc)
+        if df_m1 is None and fallback_df is not None and len(fallback_df) >= 4:
+            df_m1 = fallback_df
 
-
-
-        if df_bars is None and hasattr(self, "htf_source") and self.htf_source is not None:
-
+        if df_m1 is None and hasattr(self, "htf_source") and self.htf_source is not None:
             try:
-
-                df_bars = self.htf_source.last_closed_bars(n_bars)
-
+                df_m1 = self.htf_source.last_closed_bars(n_bars)
             except Exception:
-
                 pass
 
+        if df_m1 is None or len(df_m1) < 4:
+            return 0, {}
 
+        # Determine current M1 candle index in the M5 block (1, 2, 3, 4, 5)
+        candle_idx = 5
+        if is_live_mt5 and len(df_m1) >= 5:
+            try:
+                t = df_m1["time"].iloc[-1]
+                if isinstance(t, (int, float, np.integer)):
+                    dt = datetime.fromtimestamp(float(t), tz=timezone.utc)
+                else:
+                    dt = pd.to_datetime(t)
+                candle_idx = (dt.minute % 5) + 1
+            except Exception:
+                candle_idx = 5
 
-        if df_bars is None or len(df_bars) < slow_period + 2:
+        # STRICT GATING: We only trade on Candle 5!
+        # On Candles 1, 2, 3, 4 we only observe and aggregate, NEVER trade!
+        if is_live_mt5 and candle_idx != 5:
+            info = {
+                "candle_idx": candle_idx,
+                "status": f"BUILDING_AGGREGATE_{candle_idx}_OF_5",
+                "pattern": f"OBSERVING_CANDLE_{candle_idx}/5",
+                "action": 0,
+            }
+            return 0, info
 
-            return 0
+        # Last 4 closed M1 candles (Candles 1, 2, 3, 4 of the M5 block to predict the 5th candle)
+        if is_live_mt5 and len(df_m1) >= 5:
+            last_4 = df_m1.iloc[-5:-1]
+            last_closed_bar = last_4.iloc[-1]
+            last_close = float(df_m1["close"].iloc[-2])
+        else:
+            last_4 = df_m1.iloc[-4:]
+            last_closed_bar = last_4.iloc[-1]
+            last_close = float(df_m1["close"].iloc[-1])
 
+        # Mathematical Candle Aggregation (PKR Price Action Rules on 4 candles)
+        agg = self._aggregate_4_candles(last_4)
+        action = int(agg["action"])
 
+        # M1 SMAs for trend confirmation
+        closes = df_m1["close"]
+        use_fast = min(fast_period, len(df_m1))
+        use_slow = min(slow_period, len(df_m1))
+        fast_sma = closes.rolling(use_fast).mean()
+        slow_sma = closes.rolling(use_slow).mean()
 
-        closes = df_bars["close"]
+        last_fast = float(fast_sma.iloc[-1])
+        last_slow = float(slow_sma.iloc[-1]) if not pd.isna(slow_sma.iloc[-1]) else last_fast
+        fast_slope = float(fast_sma.iloc[-1] - fast_sma.iloc[-3]) if len(fast_sma) >= 3 else 0.0
 
-        fast_sma = closes.rolling(fast_period).mean()
+        green_bars = int((last_4["close"] > last_4["open"]).sum())
+        red_bars = int((last_4["close"] < last_4["open"]).sum())
+        is_last_green = bool(last_closed_bar["close"] >= last_closed_bar["open"])
+        is_last_red = bool(last_closed_bar["close"] <= last_closed_bar["open"])
 
-        slow_sma = closes.rolling(slow_period).mean()
+        info = {
+            "candle_idx": candle_idx,
+            "net_move": agg["agg_close"] - agg["agg_open"],
+            "green_bars": green_bars,
+            "red_bars": red_bars,
+            "is_last_green": is_last_green,
+            "is_last_red": is_last_red,
+            "fast_sma": last_fast,
+            "slow_sma": last_slow,
+            "fast_slope": fast_slope,
+            "last_close": last_close,
+            "agg": agg,
+            "pattern": agg["pattern"],
+        }
+        return action, info
 
-        last_fast = fast_sma.iloc[-1]
+    def _get_trend_for_tf(self, timeframe: str) -> int:
+        """Evaluate trend strictly via M1 trend & momentum engine."""
+        action, _ = self._get_m1_trend_and_momentum()
+        return action
 
-        last_slow = slow_sma.iloc[-1]
-
-        if pd.isna(last_fast) or pd.isna(last_slow):
-
-            return 0
-
-        if last_fast > last_slow:
-
-            return 1
-
-        elif last_fast < last_slow:
-
-            return 2
-
-        return 0
-
-
+    def _get_sub_tf_smas(self) -> Dict[str, int]:
+        """Fetch and compute M1 momentum and trend action."""
+        action, _ = self._get_m1_trend_and_momentum()
+        return {"M1": action}
 
     def get_htf_trend(self) -> int:
-
-        """Tri-Timeframe Confluence: M15 + M5 + M1 (H1 excluded).
-
-
-
-        Aligns M15, M5, and M1 SMA trends.
-
-        Returns 1 (BUY) if all active timeframes agree BUY,
-
-                2 (SELL) if all active timeframes agree SELL,
-
-                else 0 (conflict/wait).
-
-        """
-
+        """Pure M1 Trend & Momentum. Only M1 is evaluated for direction."""
         scalp_cfg = getattr(self.cfg, "scalp", None)
-
         if not scalp_cfg or not getattr(scalp_cfg, "htf_filter_enabled", True):
-
             return 0
-
-
-
-        trend_m15 = self._get_trend_for_tf("M15")
-
-        check_m5 = getattr(scalp_cfg, "check_m5", True)
-
-        check_m1 = getattr(scalp_cfg, "check_m1", True)
-
-
-
-        trend_m5 = self._get_trend_for_tf("M5") if check_m5 else 0
-
-        trend_m1 = self._get_trend_for_tf("M1") if check_m1 else 0
-
-
-
-        active_trends = [trend_m15]
-
-        if check_m5 and trend_m5 != 0:
-
-            active_trends.append(trend_m5)
-
-        if check_m1 and trend_m1 != 0:
-
-            active_trends.append(trend_m1)
-
-
-
-        valid_trends = [t for t in active_trends if t != 0]
-
-        if not valid_trends:
-
-            return 0
-
-
-
-        if all(t == 1 for t in valid_trends):
-
-            return 1
-
-        elif all(t == 2 for t in valid_trends):
-
-            return 2
-
-        else:
-
-            return 0
-
-
+        if hasattr(self, "htf_source") and self.htf_source is not None:
+            try:
+                df_htf = self.htf_source.last_closed_bars(70)
+                action, _ = self._get_m1_trend_and_momentum(fallback_df=df_htf)
+                return action
+            except Exception:
+                pass
+        action, _ = self._get_m1_trend_and_momentum()
+        return action
 
     def _get_current_trend(self, df: pd.DataFrame) -> int:
-
-        fast_period = getattr(self.signal_source, "fast", 20)
-
-        slow_period = getattr(self.signal_source, "slow", 50)
-
-        if df is None or len(df) < slow_period + 2:
-
-            return 0
-
-        closes = df["close"]
-
-        fast_sma = closes.rolling(fast_period).mean()
-
-        slow_sma = closes.rolling(slow_period).mean()
-
-        last_fast = fast_sma.iloc[-1]
-
-        last_slow = slow_sma.iloc[-1]
-
-        if pd.isna(last_fast) or pd.isna(last_slow):
-
-            return 0
-
-        if last_fast > last_slow:
-
-            return 1
-
-        elif last_fast < last_slow:
-
-            return 2
-
-        return 0
+        """Get trend strictly from M1 trend & momentum engine."""
+        action, _ = self._get_m1_trend_and_momentum(fallback_df=df)
+        return action
 
 
 
@@ -1833,6 +1830,20 @@ class LiveTrader:
 
 
         if positions:
+            # Solution 3: Basket Net Breakeven Exit (Combined Net Target)
+            # When 2 or more positions are open (e.g. 1 BUY + 1 SELL Hedge):
+            if len(positions) >= 2:
+                net_pnl = sum(float(getattr(p, "profit", 0.0)) for p in positions)
+                basket_target = float(getattr(scalp_cfg, "basket_net_target_usd", 1.0))
+                if net_pnl >= basket_target:
+                    logger.info(
+                        "🎉 [BASKET NET EXIT] %d positions reached combined Net PnL=+$%.2f >= target +$%.2f! Closing entire basket simultaneously!",
+                        len(positions), net_pnl, basket_target
+                    )
+                    for p in positions:
+                        self._close_position(p, "BASKET_NET_PROFIT", [])
+                    self._last_scalp_close_time = now
+                    return
 
             for pos in positions:
 
@@ -1866,98 +1877,58 @@ class LiveTrader:
 
 
 
-                runner_enabled = getattr(scalp_cfg, "trend_runner_enabled", True)
+                runner_enabled = bool(getattr(scalp_cfg, "trend_runner_enabled", True))
+                target_tp = float(getattr(scalp_cfg, "target_profit_usd", 1.00))
+                runner_activation_usd = float(getattr(scalp_cfg, "runner_min_profit_usd", 1.00))
+                max_tp = float(getattr(scalp_cfg, "runner_max_profit_usd", 15.00))
+                trail_pct = float(getattr(scalp_cfg, "runner_trail_percent", 15.0))
 
-                min_tp = min(tp_usd, getattr(scalp_cfg, "runner_min_profit_usd", tp_usd))
-
-
-                max_tp = getattr(scalp_cfg, "runner_max_profit_usd", 15.0)
-
-                trail_pct = getattr(scalp_cfg, "runner_trail_percent", 25.0)
-
-                pos_dir = 1 if pos.side == "buy" else 2
-
-
-
-                # 1. Big Target Reached ($10 - $20)?
-
-                if runner_enabled and profit >= max_tp:
-
-                    logger.info(
-
-                        "🏆 [MAX TREND RUNNER PROFIT] Ticket %d profit=+$%.2f reached big target >= +$%.2f! Banking massive profit!",
-
-                        pos.ticket, profit, max_tp,
-
-                    )
-
-                    self._close_position(pos, "TREND_RUNNER_MAX", [])
-
-                    self._last_scalp_close_time = now
-
-                    return
-
-
-
-                # 2. Check if reached minimum profit target ($1.00)
-                if profit >= min_tp:
-                    if not runner_enabled:
+                # Trend Runner & Auto Profit Catch:
+                # Runner activates as soon as profit touches $1.00!
+                if runner_enabled and (profit >= runner_activation_usd or peak_profit >= runner_activation_usd):
+                    # 1. Cap at max profit ($15.00)
+                    if profit >= max_tp:
                         logger.info(
-                            "💰 [SCALP PROFIT LOCK] Ticket %d profit=+$%.2f >= target +$%.2f. Closing immediately to bank profit!",
-                            pos.ticket, profit, min_tp,
+                            "🏆 [RUNNER MAX PROFIT] Ticket %d profit=+$%.2f reached max target $%.2f! Banking profit immediately!",
+                            pos.ticket, profit, max_tp
                         )
-                        self._close_position(pos, "SCALP_PROFIT_TARGET", [])
+                        self._close_position(pos, "RUNNER_MAX_PROFIT", [])
                         self._last_scalp_close_time = now
                         return
 
-                    # Evaluate Trend Health: Primary trend is M15 (our strategy timeframe)
-                    trend_m15 = self._get_trend_for_tf("M15")
-                    trend_m5 = self._get_trend_for_tf("M5")
-
-                    # Primary trend is M15: as long as M15 is in trade direction (or M5 confirms if M15 flat),
-                    # RUNNER IS ACTIVE! We do NOT kill the runner at $1.00 due to 1-minute noise!
-                    is_trend_confirmed = (trend_m15 == pos_dir or (trend_m15 == 0 and trend_m5 == pos_dir))
-
-                    # Dynamic Trailing Ratchet: Never blindly waits for $15!
-                    # Starts trailing once profit reaches $3.00+ with at least $1.00 buffer for Gold wicks.
-                    trail_start = getattr(scalp_cfg, "runner_trail_start_usd", 3.0)
-                    is_pulling_back = False
-                    if peak_profit >= trail_start:
-                        pullback_allowed = max(1.0, peak_profit * (trail_pct / 100.0))
-                        if profit <= (peak_profit - pullback_allowed):
-                            is_pulling_back = True
-                    elif peak_profit >= 2.00 and profit <= 0.75:
-                        # Breakeven safety: lock profit if it made $2+ and drops near breakeven
-                        is_pulling_back = True
-
-                    if not is_trend_confirmed and profit >= min_tp:
-                        # Real M15 trend reversal against the trade! Bank profit now!
+                    # 2. Runner is ACTIVE: Trailing profit catch
+                    # Floor is $0.89 minimum, and trails dynamically behind higher peaks:
+                    trail_floor = max(0.89, round(peak_profit * (1.0 - trail_pct / 100.0), 2))
+                    if profit <= trail_floor:
                         logger.info(
-                            "⚡ [TREND REVERSAL EXIT] Ticket %d profit=+$%.2f >= target +$%.2f. M15 trend reversed -> Banking profit!",
-                            pos.ticket, profit, min_tp,
+                            "🎯 [AUTO PROFIT CATCH / RUNNER] Ticket %d profit=+$%.2f (peak: +$%.2f) caught at floor $%.2f! Securing profit!",
+                            pos.ticket, profit, peak_profit, trail_floor
                         )
-                        self._close_position(pos, "SCALP_PROFIT_TARGET", [])
-                        self._last_scalp_close_time = now
-                        return
-                    elif is_pulling_back:
-                        # Trailing profit lock secured
-                        logger.info(
-                            "🎯 [TRAILING PROFIT SECURED] Ticket %d profit=+$%.2f (peak was +$%.2f) pulling back -> Securing runner profit!",
-                            pos.ticket, profit, peak_profit,
-                        )
-                        self._close_position(pos, "TREND_RUNNER_TRAIL", [])
+                        self._close_position(pos, "RUNNER_PROFIT_CATCH", [])
                         self._last_scalp_close_time = now
                         return
                     else:
-                        # Core trend is confirmed & surging! Let it run towards $10 - $20!
-                        last_runner_log = float(meta.get("last_runner_log", 0.0))
-                        if now - last_runner_log > 5.0:
-                            meta["last_runner_log"] = now
-                            self.executor.set_trade_meta(pos.ticket, meta)
-                            logger.info(
-                                "🚀 [TREND RUNNER ACTIVE] Ticket %d profit=+$%.2f (Peak: +$%.2f). M15 trend strongly aligned! Letting trade run towards $%.2f!",
-                                pos.ticket, profit, peak_profit, max_tp,
-                            )
+                        logger.debug("🏃 [RUNNER RUNNING] Ticket %d profit=+$%.2f (peak: +$%.2f, trailing floor: $%.2f)", pos.ticket, profit, peak_profit, trail_floor)
+
+                else:
+                    # Before $1.00: standard target profit / pullback lock
+                    pullback_tp = 0.89 if abs(target_tp - 1.00) < 0.05 else round(target_tp * 0.89, 2)
+                    if profit >= target_tp:
+                        logger.info(
+                            "💰 [PROFIT TARGET REACHED] Ticket %d profit=+$%.2f >= target +$%.2f. Banking profit immediately!",
+                            pos.ticket, profit, target_tp,
+                        )
+                        self._close_position(pos, "SCALP_PROFIT_TARGET", [])
+                        self._last_scalp_close_time = now
+                        return
+                    elif peak_profit >= (target_tp * 0.95) and profit <= pullback_tp and profit >= (pullback_tp * 0.70):
+                        logger.info(
+                            "🎯 [PROFIT PULLBACK LOCK] Ticket %d profit=+$%.2f (peak was +$%.2f) pulled back -> Securing profit at $%.2f!",
+                            pos.ticket, profit, peak_profit, pullback_tp,
+                        )
+                        self._close_position(pos, "PROFIT_PULLBACK_LOCK_89", [])
+                        self._last_scalp_close_time = now
+                        return
 
                 if getattr(scalp_cfg, "allow_loss_cut", False) and sl_usd > 0.0:
                     if profit <= -sl_usd:
@@ -1969,17 +1940,9 @@ class LiveTrader:
                         self._last_scalp_close_time = now
                         return
 
-        # Step 2: Check new entry (supports multi-trade / hedging if equity is safe)
-
-        min_eq = getattr(scalp_cfg, "multi_trade_min_equity", 80.0)
-
-        # User Rule: If balance/equity > $80, allow up to max_open_positions (up to 4 concurrent trades for hedge/rescue).
-        # If <= $80, strictly allow only 1 trade (wait for profit close before opening next)!
-        max_cfg_pos = getattr(scalp_cfg, "max_open_positions", 4)
-        allowed_max_positions = max_cfg_pos if equity > min_eq else 1
-
-        if len(positions) >= allowed_max_positions:
-
+        # Step 2: Multi-Trade Trend Support (Capped by max_open_positions)
+        max_positions = int(getattr(scalp_cfg, "max_open_positions", 4)) if scalp_cfg else 4
+        if len(positions) >= max_positions:
             return
 
 
@@ -2014,56 +1977,171 @@ class LiveTrader:
 
 
 
-        trend_action = self._get_current_trend(df)
+        m1_action, m1_info = self._get_m1_trend_and_momentum(fallback_df=df)
+        trend_action = m1_action
 
-        # Dynamic Hedge / Opposite Trend Detection:
-        # If we have an existing trade in drawdown and lower timeframes (M5 / M1) confirm opposite trend,
-        # switch trend_action to opposite direction to open a protective Hedge trade!
-        trend_m5 = self._get_trend_for_tf("M5")
-        trend_m1 = self._get_trend_for_tf("M1")
+        has_buy = any(str(getattr(p, "side", "")).lower() == "buy" for p in positions)
+        has_sell = any(str(getattr(p, "side", "")).lower() == "sell" for p in positions)
 
+        tick = self.broker.get_tick(self.cfg.broker.symbol)
+        current_bid = float(tick.get("bid", 0.0) or 0.0)
+        current_ask = float(tick.get("ask", 0.0) or 0.0)
+
+        # Feed live tick to AGEX Tick-Based Aggregator (23 Formulas Engine)
+        completed_tick_candle = None
+        if self.agex_tick_aggregation_enabled and self.tick_aggregator is not None and current_bid > 0 and current_ask > 0:
+            completed_tick_candle = self.tick_aggregator.add_tick(current_bid, current_ask, now)
+            if completed_tick_candle is not None:
+                feat = self.tick_aggregator.latest_features()
+                vol_str = f" | Vol={feat.rolling_volatility:.6f} | NormRange={feat.normalized_range:.2f}" if feat else ""
+                acc_str = f" | TickAccel={feat.tick_rate_change:+.1%}" if feat else ""
+                logger.info(
+                    "🕯️ [AGEX TICK CANDLE #%d COMPLETE] OHLC=(%.3f, %.3f, %.3f, %.3f) | Range=%.3f | Pattern=%s | Action=%d | TickRate=%.1f/s | Spread(Avg=%.3f, Max=%.3f)%s%s",
+                    completed_tick_candle.index,
+                    completed_tick_candle.open,
+                    completed_tick_candle.high,
+                    completed_tick_candle.low,
+                    completed_tick_candle.close,
+                    completed_tick_candle.range,
+                    completed_tick_candle.pattern,
+                    completed_tick_candle.action,
+                    completed_tick_candle.tick_rate,
+                    completed_tick_candle.average_spread,
+                    completed_tick_candle.maximum_spread,
+                    vol_str,
+                    acc_str,
+                )
+
+        # --- CANDLE AGGREGATION TELEMETRY (Periodic Status every 10 seconds) ---
+        if not hasattr(self, "_last_telemetry_time"):
+            self._last_telemetry_time = 0.0
+
+        if now - self._last_telemetry_time >= 10.0:
+            self._last_telemetry_time = now
+            trend_str = "BUY" if trend_action == 1 else ("SELL" if trend_action == 2 else "WAIT/NEUTRAL")
+
+            pos_summary = "None (0)"
+            if positions:
+                items = [
+                    f"{p.side.upper()} #{p.ticket} @ {p.open_price:.2f} [PnL: ${getattr(p, 'profit', 0.0):+.2f}]"
+                    for p in positions
+                ]
+                pos_summary = f"{len(positions)} active: " + ", ".join(items)
+
+            candle_idx = int(m1_info.get("candle_idx", 5))
+            tick_prog = self.tick_aggregator.current_progress() if (self.agex_tick_aggregation_enabled and self.tick_aggregator) else {}
+            tick_str = f" | Agex Ticks: {tick_prog.get('ticks', 0)}/{self.tick_aggregator.k} ({tick_prog.get('progress_pct', 0.0)}%)" if tick_prog else ""
+            if candle_idx < 5:
+                logger.info(
+                    "📡 [CANDLE AGGREGATION] Price: %.3f | M5 Block Progress: Candle %d/5 forming | Observing Candles 1-4 (Trades ONLY on 5th candle)%s | Equity: $%.2f | Positions: %s",
+                    current_bid, candle_idx, tick_str, equity, pos_summary
+                )
+            else:
+                agg = m1_info.get("agg", {})
+                b_pos = float(agg.get("body_position_pct", 50.0))
+                bias_str = "Near High (BUYERS)" if b_pos >= 55.0 else ("Near Low (SELLERS)" if b_pos <= 45.0 else "In Middle (CHOP)")
+                logger.info(
+                    "📡 [CANDLE AGGREGATION] Price: %.3f | 4xM1 Aggregate: Pattern=%s | Body: %.1f%% at %.1f%% range [%s] | Action: %s | TRADING 5TH CANDLE%s | Equity: $%.2f | Positions: %s",
+                    current_bid,
+                    m1_info.get("pattern", "N/A"),
+                    float(agg.get("body_pct", 0.0)),
+                    b_pos,
+                    bias_str,
+                    trend_str,
+                    tick_str,
+                    equity,
+                    pos_summary,
+                )
+
+        # Multi-trade trend condition:
         if positions:
-            existing_side = positions[0].side  # "buy" or "sell"
-            existing_dir = 1 if existing_side == "buy" else 2
-            opposite_dir = 2 if existing_dir == 1 else 1
+            if len(positions) >= max_positions:
+                return
 
-            is_in_drawdown = any(getattr(p, "profit", 0.0) < -0.50 for p in positions)
-            if is_in_drawdown:
-                if trend_m5 == opposite_dir or trend_m1 == opposite_dir:
-                    trend_action = opposite_dir
-                    logger.info(
-                        "🛡️ [HEDGE DETECTION] Position #1 (%s) in drawdown ($%.2f); M5/M1 confirmed %s trend -> Triggering HEDGE trade!",
-                        existing_side.upper(), positions[0].profit, "SELL" if opposite_dir == 2 else "BUY"
-                    )
+            # STRICT NO-HEDGE RULE: If holding BUY, NEVER OPEN SELL! If holding SELL, NEVER OPEN BUY!
+            if (trend_action == 1 and has_sell) or (trend_action == 2 and has_buy):
+                return
+
+            # Cooldown (30s) so we don't spam multiple entries on the same second:
+            if hasattr(self, "_last_scalp_entry_time") and (now - self._last_scalp_entry_time < 30.0):
+                return
+
+            # Same direction pullback / dip averaging only
+            if trend_action == 1 and has_buy:
+                min_buy = min(p.open_price for p in positions if p.side == "buy")
+                if current_ask > (min_buy - 0.80):
+                    return
+                logger.info("⚡ [DIP AVERAGING BUY] Price %.3f pulled down below open %.3f -> Opening trend BUY #%d!",
+                            current_ask, min_buy, len(positions) + 1)
+            elif trend_action == 2 and has_sell:
+                max_sell = max(p.open_price for p in positions if p.side == "sell")
+                if current_bid < (max_sell + 0.80):
+                    return
+                logger.info("⚡ [RALLY AVERAGING SELL] Price %.3f pulled up above open %.3f -> Opening trend SELL #%d!",
+                            current_bid, max_sell, len(positions) + 1)
+            else:
+                return
+
+        # When no positions are open, strictly trade on completed M5 bars (after 5 M1 candles complete)
+        m5_bar_key = bar_time
+        if not positions:
+            is_live_mt5 = (
+                self.cfg.trading_mode is TradingMode.LIVE
+                and hasattr(self.broker, "_mt5")
+                and getattr(self.broker, "_mt5", None) is not None
+            )
+            if is_live_mt5:
+                try:
+                    mt5 = self.broker._mt5
+                    rates_m5 = mt5.copy_rates_from_pos(self.cfg.broker.symbol, mt5.TIMEFRAME_M5, 0, 1)
+                    if rates_m5 is not None and len(rates_m5) >= 1:
+                        m5_bar_key = str(rates_m5[-1]["time"])
+                except Exception:
+                    pass
+
+                # Startup lock: If bot just started, ignore the current in-progress M5 candle!
+                if not hasattr(self, "_startup_m5_synced"):
+                    self._startup_m5_synced = True
+                    self._last_m5_entry_bar = m5_bar_key
+                    logger.info("⏳ [STARTUP LOCK] Ignored in-progress M5 candle (%s). Waiting for fresh candle cycle to begin...", m5_bar_key)
+                    return
+
+                # If already traded on this M5 bar, wait for next M5 bar
+                if hasattr(self, "_last_m5_entry_bar") and self._last_m5_entry_bar == m5_bar_key:
+                    return
 
         if trend_action not in (1, 2):
-
             return
 
+        direction_str = "BUY" if trend_action == 1 else "SELL"
+        logger.info(
+            "⚡ [5TH CANDLE PREDICTIVE ENTRY] 4xM1 Block Aggregate: Pattern=%s -> Executing %s on 5th candle!",
+            m1_info.get("pattern", "UNKNOWN"),
+            direction_str,
+        )
+
+        self._last_initial_entry_bar = bar_time
+    
         if trend_action == 2 and not self.cfg.broker.allow_short:
-
             return
 
-        # Multi-timeframe confluence: only block initial entries, not hedge trades
-        if not positions:
-            htf_trend = self.get_htf_trend()
-            if htf_trend != 0 and trend_action != htf_trend:
+        htf_trend = self.get_htf_trend()
+        if htf_trend != 0 and trend_action != htf_trend:
+            return
+
+        # Microstructure Spread Safeguard (Formula 18):
+        if self.agex_tick_aggregation_enabled and self.tick_aggregator is not None:
+            latest_c = self.tick_aggregator.latest_candle()
+            if latest_c is not None and latest_c.maximum_spread > 0.80:
+                logger.warning(
+                    "🛡️ [AGEX SPREAD GUARD] High spread detected in latest tick candle #%d (MaxSpread=%.3f > 0.80) -> Blocking entry to avoid slippage!",
+                    latest_c.index, latest_c.maximum_spread
+                )
                 return
 
 
 
-        # If already holding a position, require spacing cooldown (e.g. 30s) so we don't duplicate on same tick
-        if positions:
-            if hasattr(self, "_last_scalp_entry_attempt"):
-                if now - self._last_scalp_entry_attempt < 30.0:
-                    return
-            self._last_scalp_entry_attempt = now
-            logger.info(
-                "⚡ [MULTI-TRADE SCALPER] Equity=$%.2f > $%.2f. Position #%d already running; confirmed %s trend -> Opening position #%d/%d",
-                equity, min_eq, len(positions), "BUY" if trend_action == 1 else "SELL", len(positions) + 1, allowed_max_positions
-            )
 
-        tick = self.broker.get_tick(self.cfg.broker.symbol)
 
         md = self.executor.build_market_data(df, tick)
 
@@ -2088,7 +2166,7 @@ class LiveTrader:
         )
 
         if ok:
-
+            self._last_m5_entry_bar = m5_bar_key
             self._last_scalp_entry_time = now
 
             play_trade_open_sound()
@@ -2193,6 +2271,13 @@ class LiveTrader:
             df = bars.iloc[-self.warmup_bars:].reset_index(drop=True)
 
 
+
+            # On startup, initialize last_closed to current bar and skip historical on_closed_bar:
+            if last_closed is None:
+                last_closed = closed_time
+                self._handle_intra_candle(df, bar_time=str(closed_time))
+                time.sleep(poll_seconds)
+                continue
 
             # Intra-candle real-time monitoring and scalping
 

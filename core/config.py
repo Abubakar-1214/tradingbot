@@ -302,7 +302,7 @@ class ScalpConfig:
 
     enabled: bool = True
 
-    target_profit_usd: float = 0.40
+    target_profit_usd: float = 1.00
 
     max_loss_usd: float = 0.0
 
@@ -318,7 +318,7 @@ class ScalpConfig:
 
     htf_filter_enabled: bool = True
 
-    htf_timeframe: str = "M15"
+    htf_timeframe: str = "M5"
 
     check_m5: bool = True
 
@@ -339,6 +339,21 @@ class ScalpConfig:
     runner_trail_percent: float = 25.0
 
     runner_trail_start_usd: float = 3.00
+
+    basket_net_target_usd: float = 1.00
+
+    rsi_filter_enabled: bool = False
+
+    rsi_period: int = 14
+
+    rsi_overbought: float = 70.0
+
+    rsi_oversold: float = 30.0
+
+    max_hedge_gap_usd: float = 6.00
+    agex_tick_aggregation_enabled: bool = True
+    agex_ticks_per_candle: int = 100
+    agex_rolling_window: int = 20
 
 
 
@@ -1080,7 +1095,7 @@ def load_config(env_file: Optional[str] = None, _env: Optional[Dict[str, str]] =
 
         enabled=_as_bool("SCALP_ENABLED", env.get("SCALP_ENABLED"), True),
 
-        target_profit_usd=_as_float("SCALP_TARGET_USD", env.get("SCALP_TARGET_USD"), 0.40),
+        target_profit_usd=_as_float("SCALP_TARGET_USD", env.get("SCALP_TARGET_USD"), 1.00),
 
         max_loss_usd=_as_float("SCALP_MAX_LOSS_USD", env.get("SCALP_MAX_LOSS_USD"), 0.0),
 
@@ -1097,7 +1112,7 @@ def load_config(env_file: Optional[str] = None, _env: Optional[Dict[str, str]] =
 
         htf_filter_enabled=_as_bool("HTF_FILTER_ENABLED", env.get("HTF_FILTER_ENABLED"), True),
 
-        htf_timeframe=env.get("HTF_TIMEFRAME", "M15").upper(),
+        htf_timeframe=env.get("HTF_TIMEFRAME", "M5").upper(),
 
         check_m5=_as_bool("CHECK_M5_TREND", env.get("CHECK_M5_TREND"), True),
 
@@ -1118,6 +1133,21 @@ def load_config(env_file: Optional[str] = None, _env: Optional[Dict[str, str]] =
         runner_trail_percent=_as_float("RUNNER_TRAIL_PERCENT", env.get("RUNNER_TRAIL_PERCENT"), 25.0),
 
         runner_trail_start_usd=_as_float("RUNNER_TRAIL_START_USD", env.get("RUNNER_TRAIL_START_USD"), 3.00),
+
+        basket_net_target_usd=_as_float("BASKET_NET_TARGET_USD", env.get("BASKET_NET_TARGET_USD"), 1.00),
+
+        rsi_filter_enabled=_as_bool("RSI_FILTER_ENABLED", env.get("RSI_FILTER_ENABLED"), True),
+
+        rsi_period=_as_int("RSI_PERIOD", env.get("RSI_PERIOD"), 14),
+
+        rsi_overbought=_as_float("RSI_OVERBOUGHT", env.get("RSI_OVERBOUGHT"), 70.0),
+
+        rsi_oversold=_as_float("RSI_OVERSOLD", env.get("RSI_OVERSOLD"), 30.0),
+
+        max_hedge_gap_usd=_as_float("MAX_HEDGE_GAP_USD", env.get("MAX_HEDGE_GAP_USD"), 6.00),
+        agex_tick_aggregation_enabled=_as_bool("AGEX_TICK_AGGREGATION_ENABLED", env.get("AGEX_TICK_AGGREGATION_ENABLED"), True),
+        agex_ticks_per_candle=_as_int("AGEX_TICKS_PER_CANDLE", env.get("AGEX_TICKS_PER_CANDLE"), 100),
+        agex_rolling_window=_as_int("AGEX_ROLLING_WINDOW", env.get("AGEX_ROLLING_WINDOW"), 20),
 
 
 
