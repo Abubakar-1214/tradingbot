@@ -160,6 +160,9 @@ from core.model_artifacts import ModelArtifactError, load_manifest
 
 from core.observation import AccountState
 from core.tick_aggregator import AgexTickAggregator, AgexTickCandle, AgexRollingFeatures
+from core.multi_technique_phase1 import Phase1PredictionEngine, SignedTickPressureTracker
+from core.multi_technique_phase2_ofi import OFICalculator, MT5MarketBookManager
+from core.multi_technique_phase3_advanced import UnifiedAgexConsensusEngine
 
 from live.broker import BaseBroker, BrokerError, PositionInfo
 
@@ -703,7 +706,20 @@ class LiveTrader:
         ticks_k = int(getattr(scalp_cfg, "agex_ticks_per_candle", 100)) if scalp_cfg else 100
         rolling_m = int(getattr(scalp_cfg, "agex_rolling_window", 20)) if scalp_cfg else 20
         self.agex_tick_aggregation_enabled = bool(getattr(scalp_cfg, "agex_tick_aggregation_enabled", True)) if scalp_cfg else True
+        self.agex_phase1_consensus_enabled = bool(getattr(scalp_cfg, "agex_phase1_consensus_enabled", False)) if scalp_cfg else False
         self.tick_aggregator = AgexTickAggregator(ticks_per_candle=ticks_k, rolling_window_size=rolling_m)
+        self.stp_tracker = SignedTickPressureTracker(window_seconds=240.0)
+        self.phase1_engine = Phase1PredictionEngine(score_threshold=0.30, max_cost_ratio=0.40)
+        self.unified_consensus_engine = UnifiedAgexConsensusEngine(score_threshold=0.32, max_cost_ratio=0.55)
+        self.ofi_calculator = OFICalculator(window_seconds=240.0)
+        self.market_book_mgr = None
+        if self.cfg.trading_mode is TradingMode.LIVE and hasattr(broker, "_mt5") and getattr(broker, "_mt5", None) is not None:
+            try:
+                self.market_book_mgr = MT5MarketBookManager(broker._mt5, self.cfg.broker.symbol)
+                sub_ok = self.market_book_mgr.subscribe()
+                logger.info("📚 [AGEX OFI ENGINE] MT5 Market Depth subscription for %s: %s", self.cfg.broker.symbol, "SUCCESS" if sub_ok else "UNAVAILABLE (Broker does not provide DOM)")
+            except Exception as exc:
+                logger.warning("Could not initialize MT5 Market Depth: %s", exc)
 
         self._bars_since_close: int = 999
 
@@ -1542,14 +1558,14 @@ class LiveTrader:
 
 
     @staticmethod
-    def _aggregate_4_candles(last_bars: pd.DataFrame) -> Dict[str, object]:
-        """Mathematically aggregates 4 M1 candles to predict the 5th candle.
+    def _aggregate_candles(last_bars: pd.DataFrame) -> Dict[str, object]:
+        """Mathematically aggregates N (e.g. 7 or 4) M1 candles for pattern & directional prediction.
         
-        Formula & Rules (PKR Candle Aggregation Technique from Video):
+        Formula & Rules (Institutional Candle Aggregation Technique):
           - Open: Open price of the 1st candle
-          - Close: Close price of the 4th (last) candle
-          - High: Maximum high across all 4 candles
-          - Low: Minimum low across all 4 candles
+          - Close: Close price of the N-th (last) candle
+          - High: Maximum high across all N candles
+          - Low: Minimum low across all N candles
           - Total Range: agg_high - agg_low
           - Body: |agg_close - agg_open|
           - Upper Wick: agg_high - max(agg_open, agg_close)
@@ -1557,10 +1573,10 @@ class LiveTrader:
 
         Patterns:
           1. INDECISION / SPINNING TOP / CHOP: Both wicks large with tiny body (< 20%) -> Action 0 (WAIT)
-          2. BULLISH HAMMER (REJECTION): Long lower wick (>= 35% range, >= 1.3*body) -> Action 1 (BUY 5th candle)
-          3. BULLISH EXPANSION: Green body (agg_close > agg_open, body >= 35% range) -> Action 1 (BUY 5th candle)
-          4. BEARISH SHOOTING STAR (REJECTION): Long upper wick (>= 35% range, >= 1.3*body) -> Action 2 (SELL 5th candle)
-          5. BEARISH EXPANSION: Red body (agg_close < agg_open, body >= 35% range) -> Action 2 (SELL 5th candle)
+          2. BULLISH HAMMER (REJECTION): Long lower wick (>= 35% range, >= 1.3*body) -> Action 1 (BUY)
+          3. BULLISH EXPANSION: Green body (agg_close > agg_open, body >= 35% range) -> Action 1 (BUY)
+          4. BEARISH SHOOTING STAR (REJECTION): Long upper wick (>= 35% range, >= 1.3*body) -> Action 2 (SELL)
+          5. BEARISH EXPANSION: Red body (agg_close < agg_open, body >= 35% range) -> Action 2 (SELL)
           6. DIRECTIONAL FOLLOW: Body >= 20% with clear direction -> Action 1 or 2
         """
         agg_open = float(last_bars["open"].iloc[0])
@@ -1633,11 +1649,13 @@ class LiveTrader:
             "action": action,
         }
 
-    # Backward compatibility alias
-    _aggregate_5_candles = _aggregate_4_candles
+    # Backward compatibility aliases
+    _aggregate_4_candles = _aggregate_candles
+    _aggregate_5_candles = _aggregate_candles
 
     def _get_m1_trend_and_momentum(self, fallback_df: Optional[pd.DataFrame] = None) -> tuple[int, Dict[str, object]]:
-        """Strictly evaluate Trend and Momentum by Aggregating the last 4 M1 candles to predict the 5th candle.
+        """Strictly evaluate Trend and Momentum by Aggregating the rolling N (default 7) M1 candles.
+        Supports continuous rolling triggers and post-trade cooldown cycles.
         Returns:
             (action, info_dict)
             action: 1 for BUY, 2 for SELL, 0 for WAIT/NEUTRAL
@@ -1645,7 +1663,16 @@ class LiveTrader:
         scalp_cfg = getattr(self.cfg, "scalp", None)
         fast_period = int(getattr(scalp_cfg, "htf_fast_sma", 20)) if scalp_cfg else 20
         slow_period = int(getattr(scalp_cfg, "htf_slow_sma", 50)) if scalp_cfg else 50
-        n_bars = slow_period + 30
+        agg_window = int(getattr(scalp_cfg, "agex_aggregation_window", 7)) if scalp_cfg else 7
+        allow_same = bool(getattr(scalp_cfg, "allow_same_candle_reenter", False)) if scalp_cfg else False
+        reenter_wait = int(getattr(scalp_cfg, "reenter_bars_wait", 0)) if scalp_cfg else 0
+        if allow_same and reenter_wait == 0:
+            cooldown_bars = 0
+        else:
+            cooldown_bars = max(reenter_wait, int(getattr(scalp_cfg, "agex_post_trade_cooldown_bars", 2))) if scalp_cfg else 2
+        rolling_enabled = bool(getattr(scalp_cfg, "agex_rolling_trigger_enabled", True)) if scalp_cfg else True
+
+        n_bars = slow_period + max(agg_window, 30)
 
         df_m1 = None
         is_live_mt5 = (
@@ -1672,7 +1699,8 @@ class LiveTrader:
             except Exception:
                 pass
 
-        if df_m1 is None or len(df_m1) < 4:
+        min_req = min(agg_window, 4)
+        if df_m1 is None or len(df_m1) < min_req:
             return 0, {}
 
         # Determine current M1 candle index in the M5 block (1, 2, 3, 4, 5)
@@ -1688,44 +1716,45 @@ class LiveTrader:
             except Exception:
                 candle_idx = 5
 
-        # STRICT GATING: We only trade on Candle 5!
-        # On Candles 1, 2, 3, 4 we only observe and aggregate, NEVER trade!
-        if is_live_mt5 and candle_idx != 5:
+        # POST-TRADE COOLDOWN:
+        # After closing a trade, wait for market to form fresh candles (e.g. 2 bars) before new entry
+        if hasattr(self, "_bars_since_close") and self._bars_since_close < cooldown_bars:
+            info = {
+                "candle_idx": candle_idx,
+                "status": f"POST_TRADE_COOLDOWN_{self._bars_since_close}_OF_{cooldown_bars}",
+                "pattern": f"COOLDOWN_{self._bars_since_close}/{cooldown_bars}",
+                "action": 0,
+                "df_m1": df_m1,
+            }
+            return 0, info
+
+        # IF ROLLING MODE DISABLED: fall back to strict M5 Candle 5 gating
+        if is_live_mt5 and not rolling_enabled and candle_idx != 5:
             info = {
                 "candle_idx": candle_idx,
                 "status": f"BUILDING_AGGREGATE_{candle_idx}_OF_5",
                 "pattern": f"OBSERVING_CANDLE_{candle_idx}/5",
                 "action": 0,
+                "df_m1": df_m1,
             }
             return 0, info
 
-        # Last 4 closed M1 candles (Candles 1, 2, 3, 4 of the M5 block to predict the 5th candle)
-        if is_live_mt5 and len(df_m1) >= 5:
-            last_4 = df_m1.iloc[-5:-1]
-            last_closed_bar = last_4.iloc[-1]
+        # Extract last N closed M1 candles for observation window
+        if is_live_mt5 and len(df_m1) >= agg_window + 1:
+            last_bars = df_m1.iloc[-(agg_window + 1):-1]
+            last_closed_bar = last_bars.iloc[-1]
             last_close = float(df_m1["close"].iloc[-2])
         else:
-            last_4 = df_m1.iloc[-4:]
-            last_closed_bar = last_4.iloc[-1]
+            last_bars = df_m1.iloc[-agg_window:]
+            last_closed_bar = last_bars.iloc[-1]
             last_close = float(df_m1["close"].iloc[-1])
 
-        # Mathematical Candle Aggregation (PKR Price Action Rules on 4 candles)
-        agg = self._aggregate_4_candles(last_4)
+        # Mathematical Candle Aggregation on the N-candle window (SMA removed - purely institutional)
+        agg = self._aggregate_candles(last_bars)
         action = int(agg["action"])
 
-        # M1 SMAs for trend confirmation
-        closes = df_m1["close"]
-        use_fast = min(fast_period, len(df_m1))
-        use_slow = min(slow_period, len(df_m1))
-        fast_sma = closes.rolling(use_fast).mean()
-        slow_sma = closes.rolling(use_slow).mean()
-
-        last_fast = float(fast_sma.iloc[-1])
-        last_slow = float(slow_sma.iloc[-1]) if not pd.isna(slow_sma.iloc[-1]) else last_fast
-        fast_slope = float(fast_sma.iloc[-1] - fast_sma.iloc[-3]) if len(fast_sma) >= 3 else 0.0
-
-        green_bars = int((last_4["close"] > last_4["open"]).sum())
-        red_bars = int((last_4["close"] < last_4["open"]).sum())
+        green_bars = int((last_bars["close"] > last_bars["open"]).sum())
+        red_bars = int((last_bars["close"] < last_bars["open"]).sum())
         is_last_green = bool(last_closed_bar["close"] >= last_closed_bar["open"])
         is_last_red = bool(last_closed_bar["close"] <= last_closed_bar["open"])
 
@@ -1736,12 +1765,14 @@ class LiveTrader:
             "red_bars": red_bars,
             "is_last_green": is_last_green,
             "is_last_red": is_last_red,
-            "fast_sma": last_fast,
-            "slow_sma": last_slow,
-            "fast_slope": fast_slope,
             "last_close": last_close,
             "agg": agg,
             "pattern": agg["pattern"],
+            "last_bars": last_bars,
+            "last_4": last_bars,  # backwards compatibility alias
+            "df_m1": df_m1,
+            "agg_window": agg_window,
+            "rolling_enabled": rolling_enabled,
         }
         return action, info
 
@@ -2012,6 +2043,69 @@ class LiveTrader:
                     acc_str,
                 )
 
+        # Feed tick to AGEX Phase 1 Signed Tick Pressure Tracker (STP)
+        if hasattr(self, "stp_tracker") and self.stp_tracker is not None and current_bid > 0 and current_ask > 0:
+            self.stp_tracker.add_tick(current_bid, current_ask, now)
+
+        # Phase 2: Poll Depth of Market (DOM) from MT5 for Order Flow Imbalance (OFI)
+        if hasattr(self, "market_book_mgr") and self.market_book_mgr is not None and self.market_book_mgr.is_subscribed:
+            snap = self.market_book_mgr.poll_snapshot()
+            if snap is not None and hasattr(self, "ofi_calculator") and self.ofi_calculator is not None:
+                self.ofi_calculator.add_snapshot(snap)
+
+        # Evaluate Full 7-Group Institutional Consensus on Rolling N Candles or 5th Candle
+        phase1_res = None
+        candle_idx = int(m1_info.get("candle_idx", 5))
+        rolling_enabled = bool(getattr(scalp_cfg, "agex_rolling_trigger_enabled", True))
+        should_eval_consensus = (
+            self.agex_phase1_consensus_enabled
+            and (rolling_enabled or candle_idx == 5)
+            and hasattr(self, "unified_consensus_engine")
+            and self.unified_consensus_engine is not None
+            and "last_4" in m1_info
+        )
+        if should_eval_consensus:
+            phase1_res = self.unified_consensus_engine.analyze_full(
+                symbol=self.cfg.broker.symbol,
+                last_4_m1_bars=m1_info["last_4"],
+                historical_bars=m1_info.get("df_m1"),
+                tick_tracker=self.stp_tracker,
+                ofi_calculator=self.ofi_calculator,
+                current_bid=current_bid,
+                current_ask=current_ask,
+            )
+            of_score = phase1_res.feature_groups.get("order_flow", {}).get("order_flow_score", 0.0)
+            cp_score = phase1_res.feature_groups.get("candle_pressure", {}).get("candle_score", 0.0)
+            mo_score = phase1_res.feature_groups.get("momentum", {}).get("momentum_score", 0.0)
+            st_score = phase1_res.feature_groups.get("market_structure", {}).get("structure_score", 0.0)
+            re_name = phase1_res.feature_groups.get("market_regime", {}).get("regime", "N/A")
+            cost_r = phase1_res.feature_groups.get("execution_quality", {}).get("cost_ratio", 0.0)
+
+            if phase1_res.decision == "NO_TRADE":
+                if trend_action != 0:
+                    logger.info(
+                        "🛡️ [AGEX 7-GROUP CONSENSUS] Raw signal=%s blocked to NO_TRADE | Score: %+.2f | Conf: %.1f%% | Regime: %s | CostRatio: %.2f | Reasons: %s",
+                        "BUY" if trend_action == 1 else "SELL",
+                        phase1_res.directional_score,
+                        phase1_res.confidence_estimate * 100.0,
+                        re_name,
+                        cost_r,
+                        ", ".join(phase1_res.reasons),
+                    )
+                trend_action = 0
+            elif phase1_res.decision == "BUY":
+                trend_action = 1
+                logger.info(
+                    "🔬 [AGEX 7-GROUP CONSENSUS: BUY] Score: %+.2f | Conf: %.1f%% | OF: %+.2f | CP: %+.2f | MO: %+.2f | ST: %+.2f | Regime: %s | CostRatio: %.2f",
+                    phase1_res.directional_score, phase1_res.confidence_estimate * 100.0, of_score, cp_score, mo_score, st_score, re_name, cost_r
+                )
+            elif phase1_res.decision == "SELL":
+                trend_action = 2
+                logger.info(
+                    "🔬 [AGEX 7-GROUP CONSENSUS: SELL] Score: %+.2f | Conf: %.1f%% | OF: %+.2f | CP: %+.2f | MO: %+.2f | ST: %+.2f | Regime: %s | CostRatio: %.2f",
+                    phase1_res.directional_score, phase1_res.confidence_estimate * 100.0, of_score, cp_score, mo_score, st_score, re_name, cost_r
+                )
+
         # --- CANDLE AGGREGATION TELEMETRY (Periodic Status every 10 seconds) ---
         if not hasattr(self, "_last_telemetry_time"):
             self._last_telemetry_time = 0.0
@@ -2028,18 +2122,33 @@ class LiveTrader:
                 ]
                 pos_summary = f"{len(positions)} active: " + ", ".join(items)
 
-            candle_idx = int(m1_info.get("candle_idx", 5))
             tick_prog = self.tick_aggregator.current_progress() if (self.agex_tick_aggregation_enabled and self.tick_aggregator) else {}
             tick_str = f" | Agex Ticks: {tick_prog.get('ticks', 0)}/{self.tick_aggregator.k} ({tick_prog.get('progress_pct', 0.0)}%)" if tick_prog else ""
-            if candle_idx < 5:
+
+            agg = m1_info.get("agg", {})
+            b_pos = float(agg.get("body_position_pct", 50.0)) if agg else 50.0
+            bias_str = "Near High (BUYERS)" if b_pos >= 55.0 else ("Near Low (SELLERS)" if b_pos <= 45.0 else "In Middle (CHOP)")
+
+            if rolling_enabled:
+                agg_w = m1_info.get("agg_window", 7)
+                logger.info(
+                    "📡 [AGEX ROLLING %d-CANDLE] Price: %.3f | Pattern=%s | Body: %.1f%% [%s] | Action: %s%s | Equity: $%.2f | Positions: %s",
+                    agg_w,
+                    current_bid,
+                    m1_info.get("pattern", "N/A"),
+                    float(agg.get("body_pct", 0.0)) if agg else 0.0,
+                    bias_str,
+                    trend_str,
+                    tick_str,
+                    equity,
+                    pos_summary,
+                )
+            elif candle_idx < 5:
                 logger.info(
                     "📡 [CANDLE AGGREGATION] Price: %.3f | M5 Block Progress: Candle %d/5 forming | Observing Candles 1-4 (Trades ONLY on 5th candle)%s | Equity: $%.2f | Positions: %s",
                     current_bid, candle_idx, tick_str, equity, pos_summary
                 )
             else:
-                agg = m1_info.get("agg", {})
-                b_pos = float(agg.get("body_position_pct", 50.0))
-                bias_str = "Near High (BUYERS)" if b_pos >= 55.0 else ("Near Low (SELLERS)" if b_pos <= 45.0 else "In Middle (CHOP)")
                 logger.info(
                     "📡 [CANDLE AGGREGATION] Price: %.3f | 4xM1 Aggregate: Pattern=%s | Body: %.1f%% at %.1f%% range [%s] | Action: %s | TRADING 5TH CANDLE%s | Equity: $%.2f | Positions: %s",
                     current_bid,
@@ -2124,6 +2233,33 @@ class LiveTrader:
     
         if trend_action == 2 and not self.cfg.broker.allow_short:
             return
+
+        # Pullback Entry Filter (Buy the Dip, Sell the Rally):
+        # Prevents buying at the extreme peak of a green expansion or selling at the extreme low of a red drop.
+        pullback_guard = getattr(scalp_cfg, "agex_pullback_entry_enabled", True) if scalp_cfg else True
+        if pullback_guard and "agg" in m1_info:
+            agg_info = m1_info["agg"]
+            pat = agg_info.get("pattern", "")
+            agg_h = float(agg_info.get("agg_high", 0.0))
+            agg_l = float(agg_info.get("agg_low", 0.0))
+            rng = max(agg_h - agg_l, 0.001)
+
+            if trend_action == 1:
+                # If strong bullish expansion and current price is at the ceiling (top 15% of range), wait for dip!
+                if pat == "BULLISH_EXPANSION" and current_ask >= (agg_h - (rng * 0.15)):
+                    logger.info(
+                        "🛡️ [PULLBACK ENTRY GUARD] Ask=%.3f is at the very ceiling of green candle (High=%.3f, Range=%.3f) -> Waiting for pullback dip before entering BUY!",
+                        current_ask, agg_h, rng
+                    )
+                    return
+            elif trend_action == 2:
+                # If strong bearish expansion and current price is at the floor (bottom 15% of range), wait for bounce!
+                if pat == "BEARISH_EXPANSION" and current_bid <= (agg_l + (rng * 0.15)):
+                    logger.info(
+                        "🛡️ [PULLBACK ENTRY GUARD] Bid=%.3f is at the very floor of red candle (Low=%.3f, Range=%.3f) -> Waiting for pullback bounce before entering SELL!",
+                        current_bid, agg_l, rng
+                    )
+                    return
 
         htf_trend = self.get_htf_trend()
         if htf_trend != 0 and trend_action != htf_trend:

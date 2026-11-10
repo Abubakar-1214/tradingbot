@@ -354,6 +354,12 @@ class ScalpConfig:
     agex_tick_aggregation_enabled: bool = True
     agex_ticks_per_candle: int = 100
     agex_rolling_window: int = 20
+    agex_phase1_consensus_enabled: bool = False
+    agex_aggregation_window: int = 7
+    agex_post_trade_cooldown_bars: int = 2
+    agex_rolling_trigger_enabled: bool = True
+    agex_exhaustion_guard_enabled: bool = True
+    agex_pullback_entry_enabled: bool = True
 
 
 
@@ -1148,6 +1154,12 @@ def load_config(env_file: Optional[str] = None, _env: Optional[Dict[str, str]] =
         agex_tick_aggregation_enabled=_as_bool("AGEX_TICK_AGGREGATION_ENABLED", env.get("AGEX_TICK_AGGREGATION_ENABLED"), True),
         agex_ticks_per_candle=_as_int("AGEX_TICKS_PER_CANDLE", env.get("AGEX_TICKS_PER_CANDLE"), 100),
         agex_rolling_window=_as_int("AGEX_ROLLING_WINDOW", env.get("AGEX_ROLLING_WINDOW"), 20),
+        agex_phase1_consensus_enabled=_as_bool("AGEX_PHASE1_CONSENSUS_ENABLED", env.get("AGEX_PHASE1_CONSENSUS_ENABLED"), True),
+        agex_aggregation_window=_as_int("AGEX_AGGREGATION_WINDOW", env.get("AGEX_AGGREGATION_WINDOW"), 7),
+        agex_post_trade_cooldown_bars=_as_int("AGEX_POST_TRADE_COOLDOWN_BARS", env.get("AGEX_POST_TRADE_COOLDOWN_BARS"), 2),
+        agex_rolling_trigger_enabled=_as_bool("AGEX_ROLLING_TRIGGER_ENABLED", env.get("AGEX_ROLLING_TRIGGER_ENABLED"), True),
+        agex_exhaustion_guard_enabled=_as_bool("AGEX_EXHAUSTION_GUARD_ENABLED", env.get("AGEX_EXHAUSTION_GUARD_ENABLED"), True),
+        agex_pullback_entry_enabled=_as_bool("AGEX_PULLBACK_ENTRY_ENABLED", env.get("AGEX_PULLBACK_ENTRY_ENABLED"), True),
 
 
 

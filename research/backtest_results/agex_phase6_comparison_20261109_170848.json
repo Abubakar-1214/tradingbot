@@ -1,0 +1,607 @@
+{
+  "timestamp": "2026-11-09T12:08:48.276280+00:00",
+  "symbol": "XAUUSDm",
+  "m1_bars_count": 10000,
+  "start_time": "2026-10-29 05:13:00",
+  "end_time": "2026-11-09 12:08:00",
+  "cost_model": {
+    "lot_size": 0.01,
+    "contract_size": 100.0,
+    "spread_usd": 0.24,
+    "slippage_usd": 0.02,
+    "commission_usd": 0.03
+  },
+  "versions": {
+    "BASELINE": {
+      "version_name": "BASELINE",
+      "description": "Existing direction on 7 candles",
+      "total_candles": 9986,
+      "total_trades": 4993,
+      "no_trade_count": 4993,
+      "no_trade_pct": 50.0,
+      "wins": 1987,
+      "losses": 3006,
+      "win_rate": 39.8,
+      "gross_profit": 2131.383,
+      "gross_loss": 3406.834,
+      "net_profit": -1275.451,
+      "avg_win": 1.0727,
+      "avg_loss": 1.1333,
+      "expectancy": -0.2554,
+      "profit_factor": 0.63,
+      "max_drawdown_usd": 1278.433,
+      "max_drawdown_pct": 1241.41,
+      "buy_trades": 2406,
+      "buy_accuracy": 40.15,
+      "sell_trades": 2587,
+      "sell_accuracy": 39.47,
+      "session_breakdown": {
+        "ASIAN": {
+          "trades": 1760,
+          "win_rate": 41.31,
+          "net_profit": -426.534
+        },
+        "LONDON": {
+          "trades": 1385,
+          "win_rate": 38.92,
+          "net_profit": -383.182
+        },
+        "NEW_YORK": {
+          "trades": 1468,
+          "win_rate": 41.21,
+          "net_profit": -317.141
+        },
+        "OFF_HOURS": {
+          "trades": 380,
+          "win_rate": 30.53,
+          "net_profit": -148.594
+        }
+      },
+      "regime_breakdown": {
+        "LOW": {
+          "trades": 1144,
+          "win_rate": 39.86,
+          "net_profit": -266.756
+        },
+        "NORMAL": {
+          "trades": 3590,
+          "win_rate": 39.61,
+          "net_profit": -941.148
+        },
+        "HIGH": {
+          "trades": 259,
+          "win_rate": 42.08,
+          "net_profit": -67.547
+        }
+      }
+    },
+    "VERSION_A": {
+      "version_name": "VERSION_A",
+      "description": "Baseline + Candle features (SignedBody, CLV, Rejection)",
+      "total_candles": 9986,
+      "total_trades": 3783,
+      "no_trade_count": 6203,
+      "no_trade_pct": 62.12,
+      "wins": 1478,
+      "losses": 2304,
+      "win_rate": 39.07,
+      "gross_profit": 1603.872,
+      "gross_loss": 2592.207,
+      "net_profit": -988.335,
+      "avg_win": 1.0852,
+      "avg_loss": 1.1251,
+      "expectancy": -0.2612,
+      "profit_factor": 0.62,
+      "max_drawdown_usd": 989.987,
+      "max_drawdown_pct": 989.99,
+      "buy_trades": 1781,
+      "buy_accuracy": 38.85,
+      "sell_trades": 2002,
+      "sell_accuracy": 39.26,
+      "session_breakdown": {
+        "ASIAN": {
+          "trades": 1364,
+          "win_rate": 40.47,
+          "net_profit": -296.296
+        },
+        "LONDON": {
+          "trades": 1020,
+          "win_rate": 37.25,
+          "net_profit": -297.326
+        },
+        "NEW_YORK": {
+          "trades": 1119,
+          "win_rate": 40.04,
+          "net_profit": -333.368
+        },
+        "OFF_HOURS": {
+          "trades": 280,
+          "win_rate": 35.0,
+          "net_profit": -61.345
+        }
+      },
+      "regime_breakdown": {
+        "LOW": {
+          "trades": 749,
+          "win_rate": 36.98,
+          "net_profit": -254.727
+        },
+        "NORMAL": {
+          "trades": 2780,
+          "win_rate": 39.17,
+          "net_profit": -649.231
+        },
+        "HIGH": {
+          "trades": 254,
+          "win_rate": 44.09,
+          "net_profit": -84.377
+        }
+      }
+    },
+    "VERSION_B": {
+      "version_name": "VERSION_B",
+      "description": "Version A + Signed Tick Pressure (STP proxy)",
+      "total_candles": 9986,
+      "total_trades": 3340,
+      "no_trade_count": 6646,
+      "no_trade_pct": 66.55,
+      "wins": 1314,
+      "losses": 2026,
+      "win_rate": 39.34,
+      "gross_profit": 1386.077,
+      "gross_loss": 2306.12,
+      "net_profit": -920.043,
+      "avg_win": 1.0549,
+      "avg_loss": 1.1383,
+      "expectancy": -0.2755,
+      "profit_factor": 0.6,
+      "max_drawdown_usd": 920.043,
+      "max_drawdown_pct": 920.04,
+      "buy_trades": 1587,
+      "buy_accuracy": 39.38,
+      "sell_trades": 1753,
+      "sell_accuracy": 39.3,
+      "session_breakdown": {
+        "ASIAN": {
+          "trades": 1210,
+          "win_rate": 42.4,
+          "net_profit": -290.023
+        },
+        "LONDON": {
+          "trades": 897,
+          "win_rate": 36.45,
+          "net_profit": -278.153
+        },
+        "NEW_YORK": {
+          "trades": 985,
+          "win_rate": 39.9,
+          "net_profit": -271.328
+        },
+        "OFF_HOURS": {
+          "trades": 248,
+          "win_rate": 32.66,
+          "net_profit": -80.539
+        }
+      },
+      "regime_breakdown": {
+        "LOW": {
+          "trades": 617,
+          "win_rate": 37.44,
+          "net_profit": -215.001
+        },
+        "NORMAL": {
+          "trades": 2464,
+          "win_rate": 39.89,
+          "net_profit": -586.839
+        },
+        "HIGH": {
+          "trades": 259,
+          "win_rate": 38.61,
+          "net_profit": -118.203
+        }
+      }
+    },
+    "VERSION_C": {
+      "version_name": "VERSION_C",
+      "description": "Version B + Order Flow Imbalance (OFI where DOM exists)",
+      "total_candles": 9986,
+      "total_trades": 3340,
+      "no_trade_count": 6646,
+      "no_trade_pct": 66.55,
+      "wins": 1314,
+      "losses": 2026,
+      "win_rate": 39.34,
+      "gross_profit": 1386.077,
+      "gross_loss": 2306.12,
+      "net_profit": -920.043,
+      "avg_win": 1.0549,
+      "avg_loss": 1.1383,
+      "expectancy": -0.2755,
+      "profit_factor": 0.6,
+      "max_drawdown_usd": 920.043,
+      "max_drawdown_pct": 920.04,
+      "buy_trades": 1587,
+      "buy_accuracy": 39.38,
+      "sell_trades": 1753,
+      "sell_accuracy": 39.3,
+      "session_breakdown": {
+        "ASIAN": {
+          "trades": 1210,
+          "win_rate": 42.4,
+          "net_profit": -290.023
+        },
+        "LONDON": {
+          "trades": 897,
+          "win_rate": 36.45,
+          "net_profit": -278.153
+        },
+        "NEW_YORK": {
+          "trades": 985,
+          "win_rate": 39.9,
+          "net_profit": -271.328
+        },
+        "OFF_HOURS": {
+          "trades": 248,
+          "win_rate": 32.66,
+          "net_profit": -80.539
+        }
+      },
+      "regime_breakdown": {
+        "LOW": {
+          "trades": 617,
+          "win_rate": 37.44,
+          "net_profit": -215.001
+        },
+        "NORMAL": {
+          "trades": 2464,
+          "win_rate": 39.89,
+          "net_profit": -586.839
+        },
+        "HIGH": {
+          "trades": 259,
+          "win_rate": 38.61,
+          "net_profit": -118.203
+        }
+      }
+    },
+    "VERSION_D": {
+      "version_name": "VERSION_D",
+      "description": "Version C + Momentum (MC, RSI, MACD, EMA slope)",
+      "total_candles": 9986,
+      "total_trades": 3156,
+      "no_trade_count": 6830,
+      "no_trade_pct": 68.4,
+      "wins": 1266,
+      "losses": 1890,
+      "win_rate": 40.11,
+      "gross_profit": 1369.124,
+      "gross_loss": 2114.945,
+      "net_profit": -745.821,
+      "avg_win": 1.0815,
+      "avg_loss": 1.119,
+      "expectancy": -0.2363,
+      "profit_factor": 0.65,
+      "max_drawdown_usd": 749.831,
+      "max_drawdown_pct": 749.83,
+      "buy_trades": 1516,
+      "buy_accuracy": 39.31,
+      "sell_trades": 1640,
+      "sell_accuracy": 40.85,
+      "session_breakdown": {
+        "ASIAN": {
+          "trades": 1141,
+          "win_rate": 43.65,
+          "net_profit": -203.041
+        },
+        "LONDON": {
+          "trades": 849,
+          "win_rate": 36.75,
+          "net_profit": -268.208
+        },
+        "NEW_YORK": {
+          "trades": 928,
+          "win_rate": 40.84,
+          "net_profit": -198.779
+        },
+        "OFF_HOURS": {
+          "trades": 238,
+          "win_rate": 32.35,
+          "net_profit": -75.793
+        }
+      },
+      "regime_breakdown": {
+        "LOW": {
+          "trades": 591,
+          "win_rate": 37.56,
+          "net_profit": -221.491
+        },
+        "NORMAL": {
+          "trades": 2340,
+          "win_rate": 40.34,
+          "net_profit": -471.632
+        },
+        "HIGH": {
+          "trades": 225,
+          "win_rate": 44.44,
+          "net_profit": -52.698
+        }
+      }
+    },
+    "VERSION_E": {
+      "version_name": "VERSION_E",
+      "description": "Version D + Volatility filters (ATR, Relative Range)",
+      "total_candles": 9986,
+      "total_trades": 3142,
+      "no_trade_count": 6844,
+      "no_trade_pct": 68.54,
+      "wins": 1259,
+      "losses": 1883,
+      "win_rate": 40.07,
+      "gross_profit": 1346.279,
+      "gross_loss": 2106.986,
+      "net_profit": -760.707,
+      "avg_win": 1.0693,
+      "avg_loss": 1.119,
+      "expectancy": -0.2421,
+      "profit_factor": 0.64,
+      "max_drawdown_usd": 764.717,
+      "max_drawdown_pct": 764.72,
+      "buy_trades": 1505,
+      "buy_accuracy": 39.14,
+      "sell_trades": 1637,
+      "sell_accuracy": 40.93,
+      "session_breakdown": {
+        "ASIAN": {
+          "trades": 1141,
+          "win_rate": 43.65,
+          "net_profit": -203.798
+        },
+        "LONDON": {
+          "trades": 842,
+          "win_rate": 36.7,
+          "net_profit": -275.624
+        },
+        "NEW_YORK": {
+          "trades": 923,
+          "win_rate": 40.85,
+          "net_profit": -200.628
+        },
+        "OFF_HOURS": {
+          "trades": 236,
+          "win_rate": 31.78,
+          "net_profit": -80.657
+        }
+      },
+      "regime_breakdown": {
+        "LOW": {
+          "trades": 583,
+          "win_rate": 37.22,
+          "net_profit": -225.568
+        },
+        "NORMAL": {
+          "trades": 2348,
+          "win_rate": 40.42,
+          "net_profit": -492.878
+        },
+        "HIGH": {
+          "trades": 211,
+          "win_rate": 44.08,
+          "net_profit": -42.261
+        }
+      }
+    },
+    "VERSION_F": {
+      "version_name": "VERSION_F",
+      "description": "Version E + Market Structure (BOS, Pivots, Donchian)",
+      "total_candles": 9986,
+      "total_trades": 3233,
+      "no_trade_count": 6753,
+      "no_trade_pct": 67.62,
+      "wins": 1281,
+      "losses": 1952,
+      "win_rate": 39.62,
+      "gross_profit": 1412.722,
+      "gross_loss": 2194.193,
+      "net_profit": -781.471,
+      "avg_win": 1.1028,
+      "avg_loss": 1.1241,
+      "expectancy": -0.2418,
+      "profit_factor": 0.64,
+      "max_drawdown_usd": 785.746,
+      "max_drawdown_pct": 785.75,
+      "buy_trades": 1526,
+      "buy_accuracy": 39.06,
+      "sell_trades": 1707,
+      "sell_accuracy": 40.13,
+      "session_breakdown": {
+        "ASIAN": {
+          "trades": 1172,
+          "win_rate": 42.49,
+          "net_profit": -208.39
+        },
+        "LONDON": {
+          "trades": 868,
+          "win_rate": 37.79,
+          "net_profit": -262.064
+        },
+        "NEW_YORK": {
+          "trades": 955,
+          "win_rate": 39.69,
+          "net_profit": -227.189
+        },
+        "OFF_HOURS": {
+          "trades": 238,
+          "win_rate": 31.93,
+          "net_profit": -83.828
+        }
+      },
+      "regime_breakdown": {
+        "LOW": {
+          "trades": 597,
+          "win_rate": 35.34,
+          "net_profit": -222.406
+        },
+        "NORMAL": {
+          "trades": 2417,
+          "win_rate": 40.26,
+          "net_profit": -503.929
+        },
+        "HIGH": {
+          "trades": 219,
+          "win_rate": 44.29,
+          "net_profit": -55.136
+        }
+      }
+    },
+    "VERSION_G": {
+      "version_name": "VERSION_G",
+      "description": "Version F + Market Regime & Kalman Trend Filter",
+      "total_candles": 9986,
+      "total_trades": 2912,
+      "no_trade_count": 7074,
+      "no_trade_pct": 70.84,
+      "wins": 1148,
+      "losses": 1763,
+      "win_rate": 39.42,
+      "gross_profit": 1233.723,
+      "gross_loss": 1960.352,
+      "net_profit": -726.629,
+      "avg_win": 1.0747,
+      "avg_loss": 1.1119,
+      "expectancy": -0.2495,
+      "profit_factor": 0.63,
+      "max_drawdown_usd": 727.916,
+      "max_drawdown_pct": 727.82,
+      "buy_trades": 1393,
+      "buy_accuracy": 40.27,
+      "sell_trades": 1519,
+      "sell_accuracy": 38.64,
+      "session_breakdown": {
+        "ASIAN": {
+          "trades": 1051,
+          "win_rate": 42.63,
+          "net_profit": -200.977
+        },
+        "LONDON": {
+          "trades": 771,
+          "win_rate": 35.8,
+          "net_profit": -274.364
+        },
+        "NEW_YORK": {
+          "trades": 877,
+          "win_rate": 40.02,
+          "net_profit": -209.138
+        },
+        "OFF_HOURS": {
+          "trades": 213,
+          "win_rate": 34.27,
+          "net_profit": -42.15
+        }
+      },
+      "regime_breakdown": {
+        "LOW": {
+          "trades": 533,
+          "win_rate": 34.9,
+          "net_profit": -210.35
+        },
+        "NORMAL": {
+          "trades": 2140,
+          "win_rate": 40.47,
+          "net_profit": -444.019
+        },
+        "HIGH": {
+          "trades": 239,
+          "win_rate": 40.17,
+          "net_profit": -72.26
+        }
+      }
+    },
+    "VERSION_H": {
+      "version_name": "VERSION_H",
+      "description": "Complete 7-Group Institutional Consensus + Execution Filters",
+      "total_candles": 9986,
+      "total_trades": 2956,
+      "no_trade_count": 7030,
+      "no_trade_pct": 70.4,
+      "wins": 1171,
+      "losses": 1784,
+      "win_rate": 39.61,
+      "gross_profit": 1300.856,
+      "gross_loss": 1977.554,
+      "net_profit": -676.698,
+      "avg_win": 1.1109,
+      "avg_loss": 1.1085,
+      "expectancy": -0.229,
+      "profit_factor": 0.66,
+      "max_drawdown_usd": 682.943,
+      "max_drawdown_pct": 672.72,
+      "buy_trades": 1362,
+      "buy_accuracy": 40.09,
+      "sell_trades": 1594,
+      "sell_accuracy": 39.27,
+      "session_breakdown": {
+        "ASIAN": {
+          "trades": 1098,
+          "win_rate": 40.8,
+          "net_profit": -201.768
+        },
+        "LONDON": {
+          "trades": 807,
+          "win_rate": 37.05,
+          "net_profit": -230.514
+        },
+        "NEW_YORK": {
+          "trades": 859,
+          "win_rate": 42.14,
+          "net_profit": -172.104
+        },
+        "OFF_HOURS": {
+          "trades": 192,
+          "win_rate": 32.81,
+          "net_profit": -72.312
+        }
+      },
+      "regime_breakdown": {
+        "LOW": {
+          "trades": 536,
+          "win_rate": 35.45,
+          "net_profit": -196.387
+        },
+        "NORMAL": {
+          "trades": 2176,
+          "win_rate": 39.94,
+          "net_profit": -427.778
+        },
+        "HIGH": {
+          "trades": 244,
+          "win_rate": 46.31,
+          "net_profit": -52.533
+        }
+      }
+    }
+  },
+  "walk_forward_validation": {
+    "version": "VERSION_H",
+    "train_cycles": 1395,
+    "test_cycles": 598,
+    "train_metrics": {
+      "trades": 661,
+      "win_rate": 40.7,
+      "net_profit": -118.387,
+      "profit_factor": 0.72,
+      "expectancy": -0.179,
+      "max_drawdown_usd": 124.238,
+      "no_trade_pct": 52.62
+    },
+    "test_metrics": {
+      "trades": 281,
+      "win_rate": 41.28,
+      "net_profit": -64.605,
+      "profit_factor": 0.66,
+      "expectancy": -0.2299,
+      "max_drawdown_usd": 70.488,
+      "no_trade_pct": 53.01
+    },
+    "generalization_ratio": 1.01
+  }
+}
